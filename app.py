@@ -17,6 +17,23 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file)
 
+    # ✅ Uniformisation des colonnes
+    df.columns = df.columns.str.strip().str.lower()
+    mapping = {
+        "unité": "Unité",
+        "unite": "Unité",
+        "horodate": "Horodate",
+        "valeur": "Valeur"
+    }
+    df = df.rename(columns=mapping)
+
+    # Vérification colonnes requises
+    colonnes_requises = ["Unité", "Horodate", "Valeur"]
+    for col in colonnes_requises:
+        if col not in df.columns:
+            st.error(f"❌ Colonne manquante dans le fichier : {col}")
+            st.stop()
+
     # 2. Garder seulement colonnes utiles
     df = df[["Unité", "Horodate", "Valeur"]]
 
