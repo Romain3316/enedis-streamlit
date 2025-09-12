@@ -11,55 +11,25 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
-    # Lecture CSV ou Excel
+    # ✅ Lecture rapide avec seulement les colonnes utiles
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, sep=";", encoding="utf-8", low_memory=False)
+        df = pd.read_csv(uploaded_file, sep=";", usecols=["Unité", "Horodate", "Valeur"])
     else:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, usecols=["Unité", "Horodate", "Valeur"])
 
-    # ✅ Uniformisation des colonnes
-    df.columns = df.columns.str.strip().str.lower()
-
-    # Affichage debug : colonnes détectées
-    st.write("📑 Colonnes détectées :", list(df.columns))
-
-    # Mapping des variantes Enedis → standard
-    mapping = {
-        "unité": "Unité",
-        "unite": "Unité",
-        "horodate": "Horodate",
-        "date - heure": "Horodate",
-        "valeur": "Valeur",
-        "puissance soutirée": "Valeur",
-        "puissance soutiree": "Valeur"
-    }
-    df = df.rename(columns=mapping)
-
-    # Vérification colonnes obligatoires
-    colonnes_requises = ["Unité", "Horodate", "Valeur"]
-    for col in colonnes_requises:
-        if col not in df.columns:
-            st.error(f"❌ Colonne manquante dans le fichier : {col}")
-            st.stop()
-
-    # 2. Garder seulement colonnes utiles
-    df = df[["Unité", "Horodate", "Valeur"]]
-
-    # 3. Supprimer "VAR"
+    # 2. Nettoyage
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
+    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
 
-    # 4. Conversion date
-    df["Horodate"] = pd.to_datetime(df["Horodate"], dayfirst=True, errors="coerce")
-
-    # 5. Agrégation horaire → moyenne
+    # 3. Agrégation horaire
     df = df.set_index("Horodate")
     df = df.resample("1H").mean(numeric_only=True)
     df = df.dropna().reset_index()
 
-    # Années disponibles
+    # 4. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
 
-    # Widgets Streamlit
+    # 5. Widgets Streamlit
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -80,9 +50,9 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-    # Bouton export
+    # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
-        # Filtrage période
+        # 6. Filtrage période
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
             df = df[df["Horodate"].dt.year == annee]
@@ -92,7 +62,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # Gestion des jours 23h/25h
+        # 7. Gestion des jours 23h/25h
         if mode_horaire == "Forcer 24h/jour":
             full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
             df = df.set_index("Horodate").reindex(full_range)
@@ -100,30 +70,30 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # Vérification des trous
+        # 8. Vérification des trous
         trous = []
         full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
         missing = full_range.difference(df["Horodate"])
         if not missing.empty:
             trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-        # Format final
+        # 9. Format final
         df["Date"] = df["Horodate"].dt.date
         df["Heure"] = df["Horodate"].dt.time
-        df = df.rename(columns={"Valeur": "Moyenne_Conso"})
-        df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
+        df["Moyenne_Conso"] = df["Valeur"]
+        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # Aperçu
+        # 10. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # Message trous
+        # 11. Message trous
         if trous:
             st.warning(f"⚠️ Données manquantes (exemple) : {', '.join(trous[:5])}")
         else:
             st.success("✅ Pas de données manquantes")
 
-        # Export
+        # 12. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
