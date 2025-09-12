@@ -5,11 +5,17 @@ from io import BytesIO
 st.title("📊 Traitement des données Enedis")
 
 # 1. Import fichier
-uploaded_file = st.file_uploader("Choisissez un fichier Enedis (Excel)", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader(
+    "Choisissez un fichier Enedis (Excel ou CSV)", 
+    type=["xlsx", "xls", "csv"]
+)
 
 if uploaded_file:
-    # Lecture Excel
-    df = pd.read_excel(uploaded_file)
+    # Lecture CSV ou Excel
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file, sep=";", encoding="utf-8", low_memory=False)
+    else:
+        df = pd.read_excel(uploaded_file)
 
     # 2. Garder seulement colonnes utiles
     df = df[["Unité", "Horodate", "Valeur"]]
@@ -81,6 +87,10 @@ if uploaded_file:
         df["Heure"] = df["Horodate"].dt.time
         df = df.rename(columns={"Valeur": "Moyenne_Conso"})
         df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
+
+        # Aperçu
+        st.subheader("📋 Aperçu des données traitées")
+        st.dataframe(df_final.head(20))
 
         # Message trous
         if trous:
