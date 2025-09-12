@@ -19,15 +19,23 @@ if uploaded_file:
 
     # ✅ Uniformisation des colonnes
     df.columns = df.columns.str.strip().str.lower()
+
+    # Affichage debug : colonnes détectées
+    st.write("📑 Colonnes détectées :", list(df.columns))
+
+    # Mapping des variantes Enedis → standard
     mapping = {
         "unité": "Unité",
         "unite": "Unité",
         "horodate": "Horodate",
-        "valeur": "Valeur"
+        "date - heure": "Horodate",
+        "valeur": "Valeur",
+        "puissance soutirée": "Valeur",
+        "puissance soutiree": "Valeur"
     }
     df = df.rename(columns=mapping)
 
-    # Vérification colonnes requises
+    # Vérification colonnes obligatoires
     colonnes_requises = ["Unité", "Horodate", "Valeur"]
     for col in colonnes_requises:
         if col not in df.columns:
