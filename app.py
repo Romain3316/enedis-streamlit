@@ -26,6 +26,21 @@ if uploaded_file:
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
+    # 🔎 Détection anomalies AVANT resample
+    anomalies = []
+
+    # Doublons exacts (même horodatage répété)
+    doublons_exacts = df["Horodate"][df["Horodate"].duplicated()]
+    if not doublons_exacts.empty:
+        anomalies.extend([f"Doublon exact: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in doublons_exacts])
+
+    # Doublons horaires (cas heure d’hiver)
+    df["Jour"] = df["Horodate"].dt.date
+    df["Heure_str"] = df["Horodate"].dt.strftime("%H:%M")
+    doublons_horaires = df[df.duplicated(subset=["Jour", "Heure_str"], keep=False)]
+    if not doublons_horaires.empty:
+        anomalies.extend([f"Heure doublée (hiver): {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in doublons_horaires["Horodate"]])
+
     # 4. Agrégation horaire → moyenne
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
@@ -73,10 +88,8 @@ if uploaded_file:
                 df["Valeur"] = df["Valeur"].interpolate(method="linear")
                 df = df.reset_index()
 
-        # 9. Vérification des anomalies (Europe/Paris)
-        trous = []
+        # 9. Vérification des heures manquantes (Europe/Paris)
         if not df.empty:
-            # Range avec fuseau Europe/Paris
             full_range = pd.date_range(
                 df["Horodate"].min(),
                 df["Horodate"].max(),
@@ -84,20 +97,12 @@ if uploaded_file:
                 tz="Europe/Paris"
             ).tz_convert(None)
 
-            # Heures manquantes
             missing = full_range.difference(df["Horodate"])
-
-            # ✅ Ignorer les trous en début et fin de période
-            if not missing.empty:
-                missing = missing[(missing > df["Horodate"].min()) & (missing < df["Horodate"].max())]
+            # ✅ Ne garder que les trous au milieu
+            missing = missing[(missing > df["Horodate"].min()) & (missing < df["Horodate"].max())]
 
             if not missing.empty:
-                trous.extend([f"Manquante: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
-
-            # Heures doublées
-            duplicated = df["Horodate"][df["Horodate"].duplicated()]
-            if not duplicated.empty:
-                trous.extend([f"Doublée: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in duplicated])
+                anomalies.extend([f"Heure manquante (été): {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
 
         # 10. Format final → JJ/MM/AAAA et HH:MM:SS
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
@@ -114,10 +119,10 @@ if uploaded_file:
         st.dataframe(df_final.head(20))
 
         # 12. Message anomalies
-        if trous:
-            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(trous[:10]))
+        if anomalies:
+            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies[:15]))
         else:
-            st.success("✅ Pas de données manquantes")
+            st.success("✅ Pas de données manquantes ni doublées")
 
         # 13. Export
         if format_export == "CSV":
