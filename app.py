@@ -19,7 +19,7 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion datetime (format ISO → Pandas le gère direct)
+    # 2. Conversion datetime
     df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
 
     # 3. Nettoyage → garder uniquement W et kW
@@ -73,13 +73,26 @@ if uploaded_file:
                 df["Valeur"] = df["Valeur"].interpolate(method="linear")
                 df = df.reset_index()
 
-        # 9. Vérification des trous
+        # 9. Vérification des trous (heures manquantes et doublées avec Europe/Paris)
         trous = []
         if not df.empty:
-            full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
+            # Range avec fuseau Europe/Paris
+            full_range = pd.date_range(
+                df["Horodate"].min(),
+                df["Horodate"].max(),
+                freq="1H",
+                tz="Europe/Paris"
+            ).tz_convert(None)  # on enlève le tz pour comparer
+
+            # Heures manquantes
             missing = full_range.difference(df["Horodate"])
             if not missing.empty:
-                trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
+                trous.extend([f"Manquante: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
+
+            # Heures doublées
+            duplicated = df["Horodate"][df["Horodate"].duplicated()]
+            if not duplicated.empty:
+                trous.extend([f"Doublée: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in duplicated])
 
         # 10. Format final → JJ/MM/AAAA et HH:MM:SS
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
@@ -97,7 +110,7 @@ if uploaded_file:
 
         # 12. Message trous
         if trous:
-            st.warning(f"⚠️ Données manquantes (exemple) : {', '.join(trous[:5])}")
+            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(trous[:10]))
         else:
             st.success("✅ Pas de données manquantes")
 
