@@ -29,17 +29,13 @@ if uploaded_file:
     # 🔎 Détection anomalies AVANT resample
     anomalies = []
 
-    # Doublons exacts (même horodatage répété)
-    doublons_exacts = df["Horodate"][df["Horodate"].duplicated()]
-    if not doublons_exacts.empty:
-        anomalies.extend([f"Doublon exact: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in doublons_exacts])
-
-    # Doublons horaires (cas heure d’hiver)
+    # Heures doublées (hiver) → regrouper par jour
     df["Jour"] = df["Horodate"].dt.date
     df["Heure_str"] = df["Horodate"].dt.strftime("%H:%M")
     doublons_horaires = df[df.duplicated(subset=["Jour", "Heure_str"], keep=False)]
     if not doublons_horaires.empty:
-        anomalies.extend([f"Heure doublée (hiver): {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in doublons_horaires["Horodate"]])
+        for jour in doublons_horaires["Jour"].unique():
+            anomalies.append(f"Heure doublée (hiver): {jour} 02:00–03:00")
 
     # 4. Agrégation horaire → moyenne
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
@@ -120,7 +116,7 @@ if uploaded_file:
 
         # 12. Message anomalies
         if anomalies:
-            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies[:15]))
+            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies))
         else:
             st.success("✅ Pas de données manquantes ni doublées")
 
