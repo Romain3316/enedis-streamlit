@@ -82,10 +82,16 @@ if uploaded_file:
                 df["Horodate"].max(),
                 freq="1H",
                 tz="Europe/Paris"
-            ).tz_convert(None)  # on enlève le tz pour comparer
+            ).tz_convert(None)  # comparer sans timezone
 
             # Heures manquantes
             missing = full_range.difference(df["Horodate"])
+
+            # ✅ Ignorer trou unique si c'est la dernière heure du fichier
+            if not missing.empty:
+                if len(missing) == 1 and missing[0] == full_range[-1]:
+                    missing = pd.DatetimeIndex([])
+
             if not missing.empty:
                 trous.extend([f"Manquante: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
 
