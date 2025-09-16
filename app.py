@@ -13,38 +13,41 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
     usecols = ["Unité", "Horodate", "Valeur"]
 
-    # ✅ Lecture avec parse_dates pour Horodate
+    # ✅ Lecture CSV
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(
             uploaded_file,
             sep=";", 
             usecols=usecols,
-            dtype={"Unité": "string"},
-            parse_dates=["Horodate"],
-            dayfirst=True
+            dtype={"Unité": "string"}
         )
+        # Conversion stricte en JJ/MM/AAAA HH:MM:SS
+        df["Horodate"] = pd.to_datetime(
+            df["Horodate"], format="%d/%m/%Y %H:%M:%S", errors="coerce"
+        )
+
+    # ✅ Lecture Excel
     else:
         df = pd.read_excel(
             uploaded_file,
             usecols=usecols,
-            dtype={"Unité": "string"},
-            parse_dates=["Horodate"]
+            dtype={"Unité": "string"}
+        )
+        df["Horodate"] = pd.to_datetime(
+            df["Horodate"], format="%d/%m/%Y %H:%M:%S", errors="coerce"
         )
 
     # 2. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-
-    # 3. Conversion datetime robuste + suppression des NaT
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # 4. Agrégation horaire → moyenne
+    # 3. Agrégation horaire → moyenne
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
-    # 5. Années disponibles
+    # 4. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
 
-    # 6. Widgets Streamlit
+    # 5. Widgets Streamlit
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -67,7 +70,7 @@ if uploaded_file:
 
     # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
-        # 7. Filtrage période
+        # 6. Filtrage période
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
             df = df[df["Horodate"].dt.year == annee]
@@ -76,7 +79,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 8. Gestion des jours 23h/25h
+        # 7. Gestion des jours 23h/25h
         if mode_horaire == "Forcer 24h/jour":
             full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
             df = df.set_index("Horodate").reindex(full_range)
@@ -84,14 +87,14 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Vérification des trous
+        # 8. Vérification des trous
         trous = []
         full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
         missing = full_range.difference(df["Horodate"])
         if not missing.empty:
             trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-        # 10. Format final → toujours en texte JJ/MM/AAAA et HH:MM:SS
+        # 9. Format final → toujours en texte JJ/MM/AAAA et HH:MM:SS
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
@@ -101,17 +104,17 @@ if uploaded_file:
         else:
             df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # 11. Aperçu
+        # 10. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Message trous
+        # 11. Message trous
         if trous:
             st.warning(f"⚠️ Données manquantes (exemple) : {', '.join(trous[:5])}")
         else:
             st.success("✅ Pas de données manquantes")
 
-        # 13. Export
+        # 12. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
