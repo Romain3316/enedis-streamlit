@@ -78,13 +78,16 @@ if uploaded_file:
         if not missing.empty:
             trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-        # 9. Format final avec date en JJ/MM/AAAA et heure en HH:MM:SS
+        # 9. Format final → forcer JJ/MM/AAAA et HH:MM:SS en texte
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
 
         # On conserve l’unité si dispo
-        df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]] if "Unité" in df.columns else df[["Date", "Heure", "Moyenne_Conso"]]
+        if "Unité" in df.columns:
+            df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
+        else:
+            df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
         # 10. Aperçu
         st.subheader("📋 Aperçu des données traitées")
@@ -102,6 +105,11 @@ if uploaded_file:
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
         else:
             output = BytesIO()
-            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 df_final.to_excel(writer, index=False)
-            st.download_button("⬇️ Télécharger en Excel", output.getvalue(), "donnees_enedis.xlsx", "application/vnd.ms-excel")
+            st.download_button(
+                "⬇️ Télécharger en Excel", 
+                output.getvalue(), 
+                "donnees_enedis.xlsx", 
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
