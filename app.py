@@ -73,7 +73,7 @@ if uploaded_file:
                 df["Valeur"] = df["Valeur"].interpolate(method="linear")
                 df = df.reset_index()
 
-        # 9. Vérification des trous (heures manquantes et doublées avec Europe/Paris)
+        # 9. Vérification des anomalies (Europe/Paris)
         trous = []
         if not df.empty:
             # Range avec fuseau Europe/Paris
@@ -82,15 +82,14 @@ if uploaded_file:
                 df["Horodate"].max(),
                 freq="1H",
                 tz="Europe/Paris"
-            ).tz_convert(None)  # comparer sans timezone
+            ).tz_convert(None)
 
             # Heures manquantes
             missing = full_range.difference(df["Horodate"])
 
-            # ✅ Ignorer trou unique si c'est la dernière heure du fichier
+            # ✅ Ignorer les trous en début et fin de période
             if not missing.empty:
-                if len(missing) == 1 and missing[0] == full_range[-1]:
-                    missing = pd.DatetimeIndex([])
+                missing = missing[(missing > df["Horodate"].min()) & (missing < df["Horodate"].max())]
 
             if not missing.empty:
                 trous.extend([f"Manquante: {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
@@ -114,7 +113,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Message trous
+        # 12. Message anomalies
         if trous:
             st.warning("⚠️ Anomalies détectées :\n" + "\n".join(trous[:10]))
         else:
