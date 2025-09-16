@@ -11,18 +11,31 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
-    # ✅ Lecture rapide avec seulement les colonnes utiles
     usecols = ["Unité", "Horodate", "Valeur"]
+
+    # ✅ Lecture directe avec parse_dates
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(
-            uploaded_file, sep=";", usecols=usecols, dtype={"Unité": "string"}
+            uploaded_file,
+            sep=";", 
+            usecols=usecols,
+            dtype={"Unité": "string"},
+            parse_dates=["Horodate"],
+            dayfirst=True
         )
     else:
-        df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
+        df = pd.read_excel(
+            uploaded_file,
+            usecols=usecols,
+            dtype={"Unité": "string"},
+            parse_dates=["Horodate"]
+        )
+
+    # Debug : aperçu des dates brutes
+    st.write("📑 Aperçu des 10 premières dates importées :", df["Horodate"].head(10))
 
     # 2. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df["Horodate"] = pd.to_datetime(df["Horodate"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["Horodate", "Valeur"])
 
     # 3. Agrégation horaire → moyenne
