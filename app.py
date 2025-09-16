@@ -78,12 +78,11 @@ if uploaded_file:
         if not missing.empty:
             trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-        # 9. Format final → forcer JJ/MM/AAAA et HH:MM:SS en texte
+        # 9. Format final → toujours en texte JJ/MM/AAAA et HH:MM:SS
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
 
-        # On conserve l’unité si dispo
         if "Unité" in df.columns:
             df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
         else:
@@ -108,8 +107,8 @@ if uploaded_file:
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 df_final.to_excel(writer, index=False)
             st.download_button(
-                "⬇️ Télécharger en Excel", 
-                output.getvalue(), 
-                "donnees_enedis.xlsx", 
+                "⬇️ Télécharger en Excel",
+                output.getvalue(),
+                "donnees_enedis.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
