@@ -13,133 +13,105 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
     usecols = ["Unité", "Horodate", "Valeur"]
 
-    # ✅ Lecture CSV
+    # ✅ Lecture CSV ou Excel
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(
-            uploaded_file,
-            sep=";", 
-            usecols=usecols,
-            dtype={"Unité": "string"}
-        )
+        df = pd.read_csv(uploaded_file, sep=";", usecols=usecols, dtype={"Unité": "string"})
     else:
-        # ✅ Lecture Excel
-        df = pd.read_excel(
-            uploaded_file,
-            usecols=usecols,
-            dtype={"Unité": "string"}
-        )
+        df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion robuste en datetime
-    df["Horodate"] = pd.to_datetime(
-        df["Horodate"], format="%d/%m/%Y %H:%M", errors="coerce"
-    )
-
-    # Si tout est NaT → on essaie avec secondes
-    if df["Horodate"].isna().all():
-        df["Horodate"] = pd.to_datetime(
-            df["Horodate"], format="%d/%m/%Y %H:%M:%S", errors="coerce"
-        )
-
-    # Si c’est encore NaT → fallback flexible
-    if df["Horodate"].isna().all():
-        df["Horodate"] = pd.to_datetime(
-            df["Horodate"], dayfirst=True, errors="coerce"
-        )
+    # 2. Conversion datetime (format ISO → Pandas le gère direct)
+    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # Vérification des dates valides
-    if df["Horodate"].isna().all():
-        st.error("❌ Aucune date valide n'a été trouvée dans le fichier. Vérifiez le format (JJ/MM/AAAA HH:MM).")
-    else:
-        # 4. Agrégation horaire → moyenne
-        df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
+    # 4. Agrégation horaire → moyenne
+    df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
-        # 5. Années disponibles
-        annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
+    # 5. Années disponibles
+    annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
 
-        # 6. Widgets Streamlit
-        choix_periode = st.selectbox(
-            "📅 Choisissez la période à exporter :",
-            ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
-        )
+    # 6. Widgets Streamlit
+    choix_periode = st.selectbox(
+        "📅 Choisissez la période à exporter :",
+        ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
+    )
 
-        mode_horaire = st.radio(
-            "⏱ Gestion des jours à 23h / 25h :",
-            ["Heures réelles (23h / 25h)", "Forcer 24h/jour"]
-        )
+    mode_horaire = st.radio(
+        "⏱ Gestion des jours à 23h / 25h :",
+        ["Heures réelles (23h / 25h)", "Forcer 24h/jour"]
+    )
 
-        format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
+    format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
-        # Période personnalisée
-        if choix_periode == "Période personnalisée":
-            col1, col2 = st.columns(2)
-            with col1:
-                date_debut = st.date_input("Date de début", value=df["Horodate"].min().date())
-            with col2:
-                date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
+    # Période personnalisée
+    if choix_periode == "Période personnalisée":
+        col1, col2 = st.columns(2)
+        with col1:
+            date_debut = st.date_input("Date de début", value=df["Horodate"].min().date())
+        with col2:
+            date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-        # Bouton traitement
-        if st.button("🚀 Lancer le traitement"):
-            # 7. Filtrage période
-            if choix_periode not in ["Toutes les données", "Période personnalisée"]:
-                annee = int(choix_periode)
-                df = df[df["Horodate"].dt.year == annee]
-            elif choix_periode == "Période personnalisée":
-                debut = pd.to_datetime(date_debut)
-                fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-                df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
+    # Bouton traitement
+    if st.button("🚀 Lancer le traitement"):
+        # 7. Filtrage période
+        if choix_periode not in ["Toutes les données", "Période personnalisée"]:
+            annee = int(choix_periode)
+            df = df[df["Horodate"].dt.year == annee]
+        elif choix_periode == "Période personnalisée":
+            debut = pd.to_datetime(date_debut)
+            fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-            # 8. Gestion des jours 23h/25h
-            if mode_horaire == "Forcer 24h/jour":
-                if not df.empty:
-                    full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-                    df = df.set_index("Horodate").reindex(full_range)
-                    df.index.name = "Horodate"
-                    df["Valeur"] = df["Valeur"].interpolate(method="linear")
-                    df = df.reset_index()
-
-            # 9. Vérification des trous
-            trous = []
+        # 8. Gestion des jours 23h/25h
+        if mode_horaire == "Forcer 24h/jour":
             if not df.empty:
                 full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-                missing = full_range.difference(df["Horodate"])
-                if not missing.empty:
-                    trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
+                df = df.set_index("Horodate").reindex(full_range)
+                df.index.name = "Horodate"
+                df["Valeur"] = df["Valeur"].interpolate(method="linear")
+                df = df.reset_index()
 
-            # 10. Format final → toujours en texte JJ/MM/AAAA et HH:MM:SS
-            df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
-            df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
-            df["Moyenne_Conso"] = df["Valeur"]
+        # 9. Vérification des trous
+        trous = []
+        if not df.empty:
+            full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
+            missing = full_range.difference(df["Horodate"])
+            if not missing.empty:
+                trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-            if "Unité" in df.columns:
-                df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
-            else:
-                df_final = df[["Date", "Heure", "Moyenne_Conso"]]
+        # 10. Format final → JJ/MM/AAAA et HH:MM:SS
+        df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
+        df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
+        df["Moyenne_Conso"] = df["Valeur"]
 
-            # 11. Aperçu
-            st.subheader("📋 Aperçu des données traitées")
-            st.dataframe(df_final.head(20))
+        if "Unité" in df.columns:
+            df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
+        else:
+            df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-            # 12. Message trous
-            if trous:
-                st.warning(f"⚠️ Données manquantes (exemple) : {', '.join(trous[:5])}")
-            else:
-                st.success("✅ Pas de données manquantes")
+        # 11. Aperçu
+        st.subheader("📋 Aperçu des données traitées")
+        st.dataframe(df_final.head(20))
 
-            # 13. Export
-            if format_export == "CSV":
-                csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
-                st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
-            else:
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    df_final.to_excel(writer, index=False)
-                st.download_button(
-                    "⬇️ Télécharger en Excel",
-                    output.getvalue(),
-                    "donnees_enedis.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        # 12. Message trous
+        if trous:
+            st.warning(f"⚠️ Données manquantes (exemple) : {', '.join(trous[:5])}")
+        else:
+            st.success("✅ Pas de données manquantes")
+
+        # 13. Export
+        if format_export == "CSV":
+            csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
+            st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
+        else:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_final.to_excel(writer, index=False)
+            st.download_button(
+                "⬇️ Télécharger en Excel",
+                output.getvalue(),
+                "donnees_enedis.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
