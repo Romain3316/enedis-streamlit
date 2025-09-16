@@ -12,19 +12,21 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
     # ✅ Lecture rapide avec seulement les colonnes utiles
+    usecols = ["Unité", "Horodate", "Valeur"]
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, sep=";", usecols=["Unité", "Horodate", "Valeur"])
+        df = pd.read_csv(
+            uploaded_file, sep=";", usecols=usecols, dtype={"Unité": "string"}
+        )
     else:
-        df = pd.read_excel(uploaded_file, usecols=["Unité", "Horodate", "Valeur"])
+        df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Nettoyage
+    # 2. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
+    df["Horodate"] = pd.to_datetime(df["Horodate"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # 3. Agrégation horaire
-    df = df.set_index("Horodate")
-    df = df.resample("1H").mean(numeric_only=True)
-    df = df.dropna().reset_index()
+    # 3. Agrégation horaire → moyenne
+    df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
     # 4. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
@@ -56,7 +58,6 @@ if uploaded_file:
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
             df = df[df["Horodate"].dt.year == annee]
-
         elif choix_periode == "Période personnalisée":
             debut = pd.to_datetime(date_debut)
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -77,11 +78,13 @@ if uploaded_file:
         if not missing.empty:
             trous = [d.strftime("%d/%m/%Y %H:%M:%S") for d in missing]
 
-        # 9. Format final
-        df["Date"] = df["Horodate"].dt.date
-        df["Heure"] = df["Horodate"].dt.time
+        # 9. Format final avec date en JJ/MM/AAAA et heure en HH:MM:SS
+        df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
+        df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
-        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
+
+        # On conserve l’unité si dispo
+        df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]] if "Unité" in df.columns else df[["Date", "Heure", "Moyenne_Conso"]]
 
         # 10. Aperçu
         st.subheader("📋 Aperçu des données traitées")
@@ -97,7 +100,6 @@ if uploaded_file:
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
-
         else:
             output = BytesIO()
             with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
