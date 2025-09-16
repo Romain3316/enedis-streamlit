@@ -19,14 +19,19 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion datetime
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
+    # 2. Conversion datetime en JJ/MM/AAAA
+    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # 4. Agrégation horaire → moyenne
+    # 4. Vérification des bornes
+    debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
+    st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
+            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+
+    # 5. Agrégation horaire → moyenne
     df_resampled = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
     # ⚡ Correction : démarrer au premier horaire complet
@@ -36,10 +41,10 @@ if uploaded_file:
 
     df = df_resampled
 
-    # 5. Années disponibles
+    # 6. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
 
-    # 6. Widgets Streamlit
+    # 7. Widgets Streamlit
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -62,7 +67,7 @@ if uploaded_file:
 
     # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
-        # 7. Filtrage période
+        # 8. Filtrage période
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
             df = df[df["Horodate"].dt.year == annee]
@@ -71,7 +76,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 8. Gestion des jours 23h/25h
+        # 9. Gestion des jours 23h/25h
         if mode_horaire == "Forcer 24h/jour":
             if not df.empty:
                 full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
@@ -80,7 +85,7 @@ if uploaded_file:
                 df["Valeur"] = df["Valeur"].interpolate(method="linear")
                 df = df.reset_index()
 
-        # 9. Vérification des anomalies
+        # 10. Vérification des anomalies
         anomalies = []
         if not df.empty:
             full_range = pd.date_range(
@@ -102,7 +107,7 @@ if uploaded_file:
                 for jour in doublons_horaires["Jour"].unique():
                     anomalies.append(f"Heure doublée (hiver): {jour} 02:00–03:00")
 
-        # 10. Format final
+        # 11. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
@@ -112,17 +117,17 @@ if uploaded_file:
         else:
             df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # 11. Aperçu
+        # 12. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Message anomalies
+        # 13. Message anomalies
         if anomalies:
             st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies))
         else:
             st.success("✅ Pas de données manquantes ni doublées")
 
-        # 13. Export
+        # 14. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
