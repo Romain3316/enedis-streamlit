@@ -32,8 +32,16 @@ if uploaded_file:
 
     # 2. Conversion robuste en datetime
     df["Horodate"] = pd.to_datetime(
-        df["Horodate"], format="%d/%m/%Y %H:%M:%S", errors="coerce"
+        df["Horodate"], format="%d/%m/%Y %H:%M", errors="coerce"
     )
+
+    # Si tout est NaT → on essaie avec secondes
+    if df["Horodate"].isna().all():
+        df["Horodate"] = pd.to_datetime(
+            df["Horodate"], format="%d/%m/%Y %H:%M:%S", errors="coerce"
+        )
+
+    # Si c’est encore NaT → fallback flexible
     if df["Horodate"].isna().all():
         df["Horodate"] = pd.to_datetime(
             df["Horodate"], dayfirst=True, errors="coerce"
