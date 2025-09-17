@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 from io import BytesIO
+import plotly.express as px
 
 st.title("📊 Traitement des données Enedis")
 
@@ -103,7 +104,46 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Export
+        # 12. Courbe de prévisualisation
+        preview = df_final.head(20).copy()
+        preview["Datetime"] = pd.to_datetime(preview["Date"] + " " + preview["Heure"], dayfirst=True)
+
+        fig_preview = px.line(
+            preview,
+            x="Datetime",
+            y="Moyenne_Conso",
+            markers=True,
+            title="⚡ Évolution de la consommation (aperçu sur 20 lignes)",
+        )
+        fig_preview.update_traces(line=dict(width=3), fill="tozeroy")
+        fig_preview.update_layout(
+            xaxis_title="Date et heure",
+            yaxis_title="Consommation moyenne",
+            template="plotly_dark",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_preview, use_container_width=True)
+
+        # 13. Courbe sur l’ensemble des données
+        df_plot = df_final.copy()
+        df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
+
+        fig_full = px.line(
+            df_plot,
+            x="Datetime",
+            y="Moyenne_Conso",
+            title="📈 Évolution de la consommation (ensemble des données)",
+        )
+        fig_full.update_traces(line=dict(width=2))
+        fig_full.update_layout(
+            xaxis_title="Date et heure",
+            yaxis_title="Consommation moyenne",
+            template="plotly_white",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_full, use_container_width=True)
+
+        # 14. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
