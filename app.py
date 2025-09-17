@@ -31,20 +31,10 @@ if uploaded_file:
     st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
             f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
 
-    # 5. Agrégation horaire → moyenne
-    df_resampled = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
-
-    # ⚡ Correction : démarrer au premier horaire complet
-    if not df_resampled.empty:
-        debut = df_resampled["Horodate"].min()
-        df_resampled = df_resampled[df_resampled["Horodate"] >= debut.ceil("1H")]
-
-    df = df_resampled
-
-    # 6. Années disponibles
+    # 5. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
 
-    # 7. Widgets Streamlit
+    # 6. Widgets Streamlit
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -67,7 +57,8 @@ if uploaded_file:
 
     # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
-        # 8. Filtrage période
+
+        # 7. Filtrage période
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
             df = df[df["Horodate"].dt.year == annee]
@@ -76,38 +67,21 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 9. Gestion des jours 23h/25h
-        if mode_horaire == "Forcer 24h/jour":
-            if not df.empty:
-                full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-                df = df.set_index("Horodate").reindex(full_range)
-                df.index.name = "Horodate"
-                df["Valeur"] = df["Valeur"].interpolate(method="linear")
-                df = df.reset_index()
+        # 8. Agrégation selon le mode choisi
+        if mode_horaire == "Heures réelles (23h / 25h)":
+            # ⚡ Grouper par heure réelle → conserve les 23h/25h
+            df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
+            df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
+            df = df.rename(columns={"Horodate_hour": "Horodate"})
+        else:
+            # ⚡ Forcer 24h/jour → resample + interpolation
+            full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
+            df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reindex(full_range)
+            df.index.name = "Horodate"
+            df["Valeur"] = df["Valeur"].interpolate(method="linear")
+            df = df.reset_index()
 
-        # 10. Vérification des anomalies
-        anomalies = []
-        if not df.empty:
-            full_range = pd.date_range(
-                df["Horodate"].min(),
-                df["Horodate"].max(),
-                freq="1H",
-                tz="Europe/Paris"
-            ).tz_convert(None)
-
-            missing = full_range.difference(df["Horodate"])
-            missing = missing[(missing > df["Horodate"].min()) & (missing < df["Horodate"].max())]
-            if not missing.empty:
-                anomalies.extend([f"Heure manquante (été): {d.strftime('%d/%m/%Y %H:%M:%S')}" for d in missing])
-
-            df["Jour"] = df["Horodate"].dt.date
-            df["Heure_str"] = df["Horodate"].dt.strftime("%H:%M")
-            doublons_horaires = df[df.duplicated(subset=["Jour", "Heure_str"], keep=False)]
-            if not doublons_horaires.empty:
-                for jour in doublons_horaires["Jour"].unique():
-                    anomalies.append(f"Heure doublée (hiver): {jour} 02:00–03:00")
-
-        # 11. Diagnostic : nombre d'heures par jour
+        # 9. Diagnostic des heures par jour
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
         jours_suspects = heures_par_jour[heures_par_jour != 24]
 
@@ -118,27 +92,18 @@ if uploaded_file:
             st.warning("⚠️ Jours avec un nombre d'heures différent de 24 détectés :")
             st.dataframe(jours_suspects)
 
-        # 12. Format final
+        # 10. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
 
-        if "Unité" in df.columns:
-            df_final = df[["Unité", "Date", "Heure", "Moyenne_Conso"]]
-        else:
-            df_final = df[["Date", "Heure", "Moyenne_Conso"]]
+        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # 13. Aperçu
+        # 11. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 14. Message anomalies
-        if anomalies:
-            st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies))
-        else:
-            st.success("✅ Pas de données manquantes ni doublées")
-
-        # 15. Export
+        # 12. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
