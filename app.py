@@ -107,7 +107,18 @@ if uploaded_file:
                 for jour in doublons_horaires["Jour"].unique():
                     anomalies.append(f"Heure doublée (hiver): {jour} 02:00–03:00")
 
-        # 11. Format final
+        # 11. Diagnostic : nombre d'heures par jour
+        heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
+        jours_suspects = heures_par_jour[heures_par_jour != 24]
+
+        st.subheader("📊 Diagnostic des heures par jour")
+        if jours_suspects.empty:
+            st.success("Toutes les journées comptent 24 heures (mode forcé ou période sans changement d'heure).")
+        else:
+            st.warning("⚠️ Jours avec un nombre d'heures différent de 24 détectés :")
+            st.dataframe(jours_suspects)
+
+        # 12. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
@@ -117,17 +128,17 @@ if uploaded_file:
         else:
             df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # 12. Aperçu
+        # 13. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 13. Message anomalies
+        # 14. Message anomalies
         if anomalies:
             st.warning("⚠️ Anomalies détectées :\n" + "\n".join(anomalies))
         else:
             st.success("✅ Pas de données manquantes ni doublées")
 
-        # 14. Export
+        # 15. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
