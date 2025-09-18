@@ -56,7 +56,7 @@ if uploaded_file:
     df["Horodate"] = pd.to_datetime(df["Horodate"], format="%d/%m/%Y %H:%M", errors="coerce")
     df = df.dropna(subset=["Horodate"])
 
-    # 3. Agrégation horaire
+    # 3. Agrégation horaire brute
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
     # 4. Années disponibles
@@ -80,62 +80,65 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-    # === Filtrage selon le choix ===
-    if choix_periode not in ["Toutes les données", "Période personnalisée"]:
-        annee = int(choix_periode)
-        df = df[df["Horodate"].dt.year == annee]
+    # 🚀 Bouton de traitement
+    if st.button("🚀 Lancer le traitement"):
 
-    elif choix_periode == "Période personnalisée":
-        debut = pd.to_datetime(date_debut)
-        fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
+        # === Filtrage selon le choix ===
+        if choix_periode not in ["Toutes les données", "Période personnalisée"]:
+            annee = int(choix_periode)
+            df = df[df["Horodate"].dt.year == annee]
 
-    # 6. Gestion des trous
-    if mode_horaire == "Forcer 24h/jour":
-        full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-        df = df.set_index("Horodate").reindex(full_range)
-        df.index.name = "Horodate"
-        df["Valeur"] = df["Valeur"].interpolate(method="linear")
-        df = df.reset_index()
+        elif choix_periode == "Période personnalisée":
+            debut = pd.to_datetime(date_debut)
+            fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-    # 7. Colonnes finales
-    df["Date"] = df["Horodate"].dt.date
-    df["Heure"] = df["Horodate"].dt.time
-    df["Moyenne_Conso"] = df["Valeur"]
+        # 6. Gestion des trous si "forcer 24h/jour"
+        if mode_horaire == "Forcer 24h/jour":
+            full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
+            df = df.set_index("Horodate").reindex(full_range)
+            df.index.name = "Horodate"
+            df["Valeur"] = df["Valeur"].interpolate(method="linear")
+            df = df.reset_index()
 
-    # 📋 Aperçu tableau
-    st.subheader("📋 Aperçu des 20 premières données traitées")
-    st.dataframe(df[["Date", "Heure", "Moyenne_Conso"]].head(20))
+        # 7. Colonnes finales
+        df["Date"] = df["Horodate"].dt.date
+        df["Heure"] = df["Horodate"].dt.time
+        df["Moyenne_Conso"] = df["Valeur"]
 
-    # 📈 Courbe complète
-    st.subheader("📈 Évolution de la consommation")
-    fig = px.line(
-        df, 
-        x="Horodate", 
-        y="Moyenne_Conso", 
-        title="Évolution de la consommation (toutes les données)",
-        template="plotly_dark"
-    )
-    fig.update_traces(line=dict(color=CMA_COLOR, width=2))
-    st.plotly_chart(fig, use_container_width=True)
+        # 📋 Aperçu tableau
+        st.subheader("📋 Aperçu des 20 premières données traitées")
+        st.dataframe(df[["Date", "Heure", "Moyenne_Conso"]].head(20))
 
-    # 🔥 Heatmap hebdomadaire
-    st.subheader("🔥 Heatmap hebdomadaire")
-    df_heatmap = df.dropna(subset=["Moyenne_Conso"]).copy()
-    df_heatmap["Jour_semaine"] = df_heatmap["Horodate"].dt.dayofweek
-    df_heatmap["Heure"] = df_heatmap["Horodate"].dt.hour
+        # 📈 Courbe complète
+        st.subheader("📈 Évolution de la consommation")
+        fig = px.line(
+            df, 
+            x="Horodate", 
+            y="Moyenne_Conso", 
+            title="Évolution de la consommation (toutes les données)",
+            template="plotly_dark"
+        )
+        fig.update_traces(line=dict(color=CMA_COLOR, width=2))
+        st.plotly_chart(fig, use_container_width=True)
 
-    pivot = df_heatmap.pivot_table(
-        values="Moyenne_Conso", 
-        index="Jour_semaine", 
-        columns="Heure", 
-        aggfunc="mean"
-    )
+        # 🔥 Heatmap hebdomadaire
+        st.subheader("🔥 Heatmap hebdomadaire")
+        df_heatmap = df.dropna(subset=["Moyenne_Conso"]).copy()
+        df_heatmap["Jour_semaine"] = df_heatmap["Horodate"].dt.dayofweek
+        df_heatmap["Heure"] = df_heatmap["Horodate"].dt.hour
 
-    plt.figure(figsize=(14,6))
-    plt.imshow(pivot, aspect="auto", cmap="RdYlGn_r")
-    plt.colorbar(label="Consommation (Moyenne)")
-    plt.xlabel("Heure")
-    plt.ylabel("Jour de semaine (0=Lundi ... 6=Dimanche)")
-    plt.title("Heatmap de la consommation par heure et jour de semaine", fontsize=14, fontweight="bold")
-    st.pyplot(plt.gcf())
+        pivot = df_heatmap.pivot_table(
+            values="Moyenne_Conso", 
+            index="Jour_semaine", 
+            columns="Heure", 
+            aggfunc="mean"
+        )
+
+        plt.figure(figsize=(14,6))
+        plt.imshow(pivot, aspect="auto", cmap="RdYlGn_r")
+        plt.colorbar(label="Consommation (Moyenne)")
+        plt.xlabel("Heure")
+        plt.ylabel("Jour de semaine (0=Lundi ... 6=Dimanche)")
+        plt.title("Heatmap de la consommation par heure et jour de semaine", fontsize=14, fontweight="bold")
+        st.pyplot(plt.gcf())
