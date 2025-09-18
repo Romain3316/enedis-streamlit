@@ -157,6 +157,3 @@ if uploaded_file:
                 "donnees_enedis.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
-
-
