@@ -68,6 +68,11 @@ if uploaded_file:
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
     )
 
+    mode_horaire = st.radio(
+        "⏱ Gestion des jours à 23h / 25h :",
+        ["Heures réelles (23h / 25h)", "Forcer 24h/jour"]
+    )
+
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -85,7 +90,15 @@ if uploaded_file:
         fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-    # 6. Colonnes finales
+    # 6. Gestion des trous
+    if mode_horaire == "Forcer 24h/jour":
+        full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
+        df = df.set_index("Horodate").reindex(full_range)
+        df.index.name = "Horodate"
+        df["Valeur"] = df["Valeur"].interpolate(method="linear")
+        df = df.reset_index()
+
+    # 7. Colonnes finales
     df["Date"] = df["Horodate"].dt.date
     df["Heure"] = df["Horodate"].dt.time
     df["Moyenne_Conso"] = df["Valeur"]
