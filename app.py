@@ -20,26 +20,24 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion datetime en JJ/MM/AAAA
+    # 2. Conversion datetime
     df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df = df.dropna(subset=["Horodate", "Valeur"])
+    df = df.dropna(subset=["Horodate", "Valeur"]).copy()
 
-    # ⚠️ Correction 1 : Ignorer la première ligne (23h55 → 00h00 de la veille)
+    # ⚡ Correction : supprimer la toute première ligne parasite
     df = df.iloc[1:].reset_index(drop=True)
 
-    # ⚠️ Correction 2 : Forcer Valeur en numérique
-    df["Valeur"] = pd.to_numeric(df["Valeur"], errors="coerce")
-    df = df.dropna(subset=["Valeur"])
-
-    # 4. Vérification des bornes
+    # Recalculer le vrai début et fin
     debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
-    pas_temps = (df["Horodate"].iloc[1] - df["Horodate"].iloc[0])
+
+    # 4. Afficher les bornes
+    pas_moyen = df["Horodate"].diff().median()
     st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
-            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**\n\n"
-            f"⏱ Pas de temps détecté : {pas_temps}")
+            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+    st.info(f"⏱ Pas de temps détecté : {pas_moyen.components.minutes} min")
 
     # 5. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
@@ -57,7 +55,6 @@ if uploaded_file:
 
     format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
-    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -89,9 +86,9 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Changements d'heure
+        # 9. Diagnostic des heures par jour (seulement 23h ou 25h)
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-        changements_heure = heures_par_jour[(heures_par_jour == 23) | (heures_par_jour == 25)]
+        changements_heure = heures_par_jour[heures_par_jour.isin([23, 25])]
 
         st.subheader("⏳ Changements d'heure détectés")
         if changements_heure.empty:
@@ -111,7 +108,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe de toutes les données
+        # 12. Courbe sur l’ensemble des données
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -125,7 +122,7 @@ if uploaded_file:
         fig_full.update_layout(
             xaxis_title="Date et heure",
             yaxis_title="Consommation moyenne",
-            template="plotly_white",
+            template="plotly_dark",
             hovermode="x unified"
         )
         st.plotly_chart(fig_full, use_container_width=True)
