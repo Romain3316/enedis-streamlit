@@ -16,28 +16,35 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file:
-    usecols = ["Unité", "Horodate", "Valeur"]
+    usecols = ["Unité", "Horodate", "Valeur", "Pas"]
 
     # ✅ Lecture CSV ou Excel
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, sep=";", usecols=usecols, dtype={"Unité": "string"})
+        df = pd.read_csv(uploaded_file, sep=";", usecols=lambda c: c in usecols, dtype="string")
     else:
-        df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
+        df = pd.read_excel(uploaded_file, usecols=lambda c: c in usecols, dtype="string")
 
-    # 2. Conversion datetime en JJ/MM/AAAA
+    # 2. Conversion datetime
     df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
 
-    # 3. Nettoyage → garder uniquement W et kW
+    # ✅ Supprimer la toute première ligne (23h55 → 00h00 de la veille)
+    df = df.iloc[1:].reset_index(drop=True)
+
+    # 3. Nettoyage → garder uniquement W et kW + dates valides
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # ✅ Correction : ignorer la toute première valeur (qui correspond à 23h55 → 00h00)
-    df = df.iloc[1:].reset_index(drop=True)
+    # 4. Détection du pas de temps
+    if len(df) > 1:
+        pas_detecte = df["Horodate"].diff().min()
+    else:
+        pas_detecte = pd.Timedelta(0)
 
-    # 4. Vérification des bornes
-    debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
-    st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
-            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+    st.info(
+        f"📅 Données disponibles : du **{df['Horodate'].min().strftime('%d/%m/%Y %H:%M')}** "
+        f"au **{df['Horodate'].max().strftime('%d/%m/%Y %H:%M')}**\n\n"
+        f"⏱ Pas de temps détecté : **{pas_detecte}**"
+    )
 
     # 5. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
@@ -55,7 +62,6 @@ if uploaded_file:
 
     format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
-    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -63,7 +69,6 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-    # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
 
         # 7. Filtrage période
@@ -75,7 +80,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 8. Agrégation selon le mode choisi
+        # 8. Agrégation
         if mode_horaire == "Heures réelles (23h / 25h)":
             df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
@@ -109,7 +114,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe sur l’ensemble des données
+        # 12. Courbe
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -130,7 +135,8 @@ if uploaded_file:
 
         # 13. Heatmap
         st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
-        df["JourSemaine"] = df["Horodate"].dt.strftime("%A")  # noms français par défaut
+        jours_fr = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
+        df["JourSemaine"] = df["Horodate"].dt.dayofweek.map(jours_fr)
         df["HeureNum"] = df["Horodate"].dt.hour
 
         pivot = df.pivot_table(index="HeureNum", columns="JourSemaine", values="Moyenne_Conso", aggfunc="mean")
