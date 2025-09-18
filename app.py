@@ -44,7 +44,7 @@ st.markdown(
 # ==============================
 # 🖼️ Logo CMA
 # ==============================
-st.image("da91f5c3-7939-4cfc-a8fe-238bc0104d51.png", width=250)
+st.image("logo-cma-na.png", width=250)
 st.title("📊 Analyse des données Enedis - CMA Nouvelle-Aquitaine")
 
 # ==============================
@@ -208,3 +208,4 @@ if uploaded_file:
                 "donnees_enedis.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
