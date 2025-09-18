@@ -2,12 +2,14 @@ import pandas as pd
 import streamlit as st
 from io import BytesIO
 import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # ==============================
 # 🎨 Personnalisation CMA
 # ==============================
-CMA_COLOR = "#9B1C31"
-CMA_BG = "#F9F9F9"
+CMA_COLOR = "#9B1C31"   # Rouge CMA
+CMA_BG = "#F9F9F9"      # Fond clair
 
 st.set_page_config(
     page_title="CMA Nouvelle-Aquitaine - Données Enedis",
@@ -16,82 +18,68 @@ st.set_page_config(
 )
 
 # CSS custom
-st.markdown(
-    f"""
+st.markdown(f"""
     <style>
-        .reportview-container {{
+        .stApp {{
             background-color: {CMA_BG};
         }}
-        .stButton button {{
+        .stButton>button {{
             background-color: {CMA_COLOR};
             color: white;
-            border-radius: 8px;
-            padding: 0.6em 1.2em;
             font-weight: bold;
-        }}
-        .stButton button:hover {{
-            background-color: #7C1527;
-            color: white;
-        }}
-        h1, h2, h3, h4 {{
-            color: {CMA_COLOR};
+            border-radius: 8px;
         }}
     </style>
-    """,
-    unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
-# ==============================
-# 🖼️ Logo CMA
-# ==============================
+# Logo CMA
 st.image("logo-cma-na.png", width=250)
-st.title("📊 Analyse des données Enedis - CMA Nouvelle-Aquitaine")
 
 # ==============================
-# 📂 Import fichier
+# 📊 Application
 # ==============================
+st.title("⚡ Traitement des données Enedis - CMA Nouvelle-Aquitaine")
+
 uploaded_file = st.file_uploader(
     "Choisissez un fichier Enedis (Excel ou CSV)", 
     type=["xlsx", "xls", "csv"]
 )
 
 if uploaded_file:
-    usecols = ["Unité", "Horodate", "Valeur"]
-
+    # ✅ Lecture uniquement des colonnes utiles
     if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file, sep=";", usecols=usecols, dtype={"Unité": "string"})
+        df = pd.read_csv(uploaded_file, sep=";", usecols=["Unité", "Horodate", "Valeur"])
     else:
-        df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
+        df = pd.read_excel(uploaded_file, usecols=["Unité", "Horodate", "Valeur"])
 
-    # Conversion datetime
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
+    # ✅ Forçage parsing JJ/MM/AAAA
+    df["Horodate"] = pd.to_datetime(df["Horodate"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["Horodate"])
+    df = df.sort_values("Horodate").drop_duplicates("Horodate")
 
-    # Filtre W / kW
+    # ✅ Suppression des "VAR", on garde W / kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # Dates disponibles
-    debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
-    st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
-            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+    # ✅ On coupe avant le 12/06/2023 si besoin
+    df = df[df["Horodate"] >= pd.to_datetime("2023-06-12")]
 
-    # Années disponibles
+    # Agrégation horaire
+    df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
+
+    # Colonnes utiles
+    df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
+    df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
+    df["Moyenne_Conso"] = df["Valeur"]
+
+    # ==============================
+    # 📅 Choix période
+    # ==============================
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
-
-    # Widgets
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
     )
 
-    mode_horaire = st.radio(
-        "⏱ Gestion des jours à 23h / 25h :",
-        ["Heures réelles (23h / 25h)", "Forcer 24h/jour"]
-    )
-
-    format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
-
-    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -99,129 +87,86 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-    # Bouton traitement
-    if st.button("🚀 Lancer le traitement"):
+    format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
-        # Filtrage période
+    # ==============================
+    # 🚀 Traitement
+    # ==============================
+    if st.button("🚀 Lancer le traitement"):
+        data = df.copy()
+
         if choix_periode not in ["Toutes les données", "Période personnalisée"]:
             annee = int(choix_periode)
-            df = df[df["Horodate"].dt.year == annee]
+            data = data[data["Horodate"].dt.year == annee]
+
         elif choix_periode == "Période personnalisée":
             debut = pd.to_datetime(date_debut)
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-            df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
-
-        # Agrégation
-        if mode_horaire == "Heures réelles (23h / 25h)":
-            df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
-            df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
-            df = df.rename(columns={"Horodate_hour": "Horodate"})
-        else:
-            full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-            df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reindex(full_range)
-            df.index.name = "Horodate"
-            df["Valeur"] = df["Valeur"].interpolate(method="linear")
-            df = df.reset_index()
-
-        # Diagnostic des heures par jour
-        heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-        jours_suspects = heures_par_jour[heures_par_jour != 24]
-
-        st.subheader("📊 Diagnostic des heures par jour")
-        if jours_suspects.empty:
-            st.success("Toutes les journées comptent 24 heures (mode forcé ou période sans changement d'heure).")
-        else:
-            st.warning("⚠️ Jours avec un nombre d'heures différent de 24 détectés :")
-            st.dataframe(jours_suspects)
-
-        # Format final
-        df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
-        df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
-        df["Moyenne_Conso"] = df["Valeur"]
-
-        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
+            data = data[(data["Horodate"] >= debut) & (data["Horodate"] <= fin)]
 
         # ==============================
-        # 📋 Tableau des 20 premières données
+        # ⚠️ Diagnostic jours incomplets
+        # ==============================
+        diag = data.groupby(data["Horodate"].dt.date).size()
+        jours_incomplets = diag[diag != 24]
+
+        if not jours_incomplets.empty:
+            st.warning("⚠️ Jours avec un nombre d'heures différent de 24 détectés :")
+            st.dataframe(jours_incomplets)
+        else:
+            st.success("✅ Tous les jours ont bien 24 relevés")
+
+        # ==============================
+        # 📋 Tableau aperçu
         # ==============================
         st.subheader("📋 Aperçu des 20 premières données traitées")
-        st.dataframe(df_final.head(20))
+        st.dataframe(data[["Date", "Heure", "Moyenne_Conso"]].head(20))
 
         # ==============================
-        # 📈 Graphique complet
+        # 📈 Graphique stylisé
         # ==============================
-        st.subheader("📈 Évolution de la consommation (ensemble des données)")
-        df_plot = df_final.copy()
-        df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
-
-        fig_full = px.line(
-            df_plot,
-            x="Datetime",
-            y="Moyenne_Conso",
-            title="📈 Évolution de la consommation",
+        st.subheader("📈 Évolution de la consommation (aperçu)")
+        fig = px.line(
+            data.head(200),  # aperçu limité
+            x="Horodate", y="Moyenne_Conso",
+            title="Évolution de la consommation (premières données)",
+            line_shape="spline"
         )
-        fig_full.update_traces(line=dict(width=2, color=CMA_COLOR))
-        fig_full.update_layout(
-            xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne",
-            template="simple_white",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_full, use_container_width=True)
+        fig.update_traces(line=dict(width=2, color=CMA_COLOR))
+        st.plotly_chart(fig, use_container_width=True)
 
         # ==============================
-        # 🔥 Heatmap hebdo (traduction FR sans locale)
+        # 🔥 Heatmap hebdo
         # ==============================
-        st.subheader("🔥 Profil hebdomadaire de consommation")
-        jours_fr = {
-            "Monday": "Lundi",
-            "Tuesday": "Mardi",
-            "Wednesday": "Mercredi",
-            "Thursday": "Jeudi",
-            "Friday": "Vendredi",
-            "Saturday": "Samedi",
-            "Sunday": "Dimanche"
-        }
-        df_heatmap = df.copy()
-        df_heatmap["Jour_semaine"] = df_heatmap["Horodate"].dt.day_name().map(jours_fr)
-        df_heatmap["Heure"] = df_heatmap["Horodate"].dt.strftime("%H:00")
+        st.subheader("🔥 Heatmap hebdomadaire")
+        df_heatmap = data.copy()
+        df_heatmap["Jour_semaine"] = df_heatmap["Horodate"].dt.dayofweek  # 0 = Lundi
+        df_heatmap["Heure"] = df_heatmap["Horodate"].dt.hour
 
         pivot = df_heatmap.pivot_table(
-            index="Heure",
-            columns="Jour_semaine",
-            values="Valeur",
-            aggfunc="mean"
+            index="Heure", columns="Jour_semaine", values="Moyenne_Conso", aggfunc="mean"
         )
 
-        ordre_jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-        pivot = pivot[[j for j in ordre_jours if j in pivot.columns]]
+        jours_labels = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
 
-        fig_heatmap = px.imshow(
-            pivot,
-            labels=dict(x="Jour de la semaine", y="Heure", color="Conso moyenne"),
-            aspect="auto",
-            color_continuous_scale="RdYlGn_r",
-        )
-        fig_heatmap.update_layout(
-            title="🔥 Profil hebdomadaire",
-            xaxis_title="Jour de la semaine",
-            yaxis_title="Heure de la journée"
-        )
-        st.plotly_chart(fig_heatmap, use_container_width=True)
+        plt.figure(figsize=(12,6))
+        sns.heatmap(pivot, cmap="RdYlGn_r", annot=False, xticklabels=jours_labels)
+        plt.title("Heatmap de la consommation par heure et jour de semaine", fontsize=14)
+        st.pyplot(plt)
 
-        # Export
+        # ==============================
+        # 📂 Export
+        # ==============================
+        df_final = data[["Date", "Heure", "Moyenne_Conso"]]
+
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
+
         else:
             output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
                 df_final.to_excel(writer, index=False)
-            st.download_button(
-                "⬇️ Télécharger en Excel",
-                output.getvalue(),
-                "donnees_enedis.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-
+            st.download_button("⬇️ Télécharger en Excel", output.getvalue(),
+                               "donnees_enedis.xlsx",
+                               "application/vnd.ms-excel")
