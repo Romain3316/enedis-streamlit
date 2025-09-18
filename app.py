@@ -10,6 +10,7 @@ import seaborn as sns
 # ==============================
 CMA_COLOR = "#9B1C31"   # Rouge CMA
 CMA_BG = "#F9F9F9"      # Fond clair
+TEXT_COLOR = "#000000"  # Noir
 
 st.set_page_config(
     page_title="CMA Nouvelle-Aquitaine - Données Enedis",
@@ -22,12 +23,20 @@ st.markdown(f"""
     <style>
         .stApp {{
             background-color: {CMA_BG};
+            color: {TEXT_COLOR};
         }}
         .stButton>button {{
             background-color: {CMA_COLOR};
             color: white;
             font-weight: bold;
             border-radius: 8px;
+        }}
+        .stRadio label, .stSelectbox label, .stDateInput label {{
+            color: {TEXT_COLOR};
+            font-weight: bold;
+        }}
+        h1, h2, h3, h4, h5, h6 {{
+            color: {TEXT_COLOR};
         }}
     </style>
 """, unsafe_allow_html=True)
@@ -123,20 +132,26 @@ if uploaded_file:
         st.dataframe(data[["Date", "Heure", "Moyenne_Conso"]].head(20))
 
         # ==============================
-        # 📈 Graphique stylisé
+        # 📈 Graphique stylisé (TOUTES données sélectionnées)
         # ==============================
-        st.subheader("📈 Évolution de la consommation (aperçu)")
+        st.subheader("📈 Évolution de la consommation")
         fig = px.line(
-            data.head(200),  # aperçu limité
+            data,
             x="Horodate", y="Moyenne_Conso",
-            title="Évolution de la consommation (premières données)",
+            title="Évolution de la consommation",
             line_shape="spline"
         )
         fig.update_traces(line=dict(width=2, color=CMA_COLOR))
+        fig.update_layout(
+            title_font=dict(size=18, color=TEXT_COLOR),
+            xaxis_title="Date",
+            yaxis_title="Consommation (Moyenne)",
+            font=dict(color=TEXT_COLOR)
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # ==============================
-        # 🔥 Heatmap hebdo
+        # 🔥 Heatmap hebdo (Seaborn)
         # ==============================
         st.subheader("🔥 Heatmap hebdomadaire")
         df_heatmap = data.copy()
@@ -151,7 +166,9 @@ if uploaded_file:
 
         plt.figure(figsize=(12,6))
         sns.heatmap(pivot, cmap="RdYlGn_r", annot=False, xticklabels=jours_labels)
-        plt.title("Heatmap de la consommation par heure et jour de semaine", fontsize=14)
+        plt.title("Heatmap de la consommation par heure et jour de semaine", fontsize=14, color=TEXT_COLOR)
+        plt.xlabel("Jour de la semaine", color=TEXT_COLOR)
+        plt.ylabel("Heure", color=TEXT_COLOR)
         st.pyplot(plt)
 
         # ==============================
