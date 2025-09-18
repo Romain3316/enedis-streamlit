@@ -5,11 +5,12 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+st.set_page_config(page_title="Données Enedis", layout="wide")
 st.title("📊 Traitement des données Enedis")
 
 # 1. Import fichier
 uploaded_file = st.file_uploader(
-    "Choisissez un fichier Enedis (Excel ou CSV)", 
+    "Choisissez un fichier Enedis (Excel ou CSV)",
     type=["xlsx", "xls", "csv"]
 )
 
@@ -22,15 +23,12 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion datetime
+    # 2. Conversion datetime en JJ/MM/AAAA
     df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
-
-    # ⚠️ Correction : démarrage au 12/06/2023
-    df = df[df["Horodate"] >= pd.Timestamp("2023-06-12 00:00:00")]
 
     # 4. Vérification des bornes
     debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
@@ -75,7 +73,7 @@ if uploaded_file:
 
         # 8. Agrégation selon le mode choisi
         if mode_horaire == "Heures réelles (23h / 25h)":
-            df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
+            df["Horodate_hour"] = df["Horodate"].dt.floor("H")
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
             df = df.rename(columns={"Horodate_hour": "Horodate"})
         else:
@@ -85,16 +83,16 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Diagnostic (afficher uniquement 23h/25h)
+        # 9. Diagnostic des jours incomplets (23h ou 25h seulement)
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-        jours_23_25 = heures_par_jour[(heures_par_jour == 23) | (heures_par_jour == 25)]
+        changements_heure = heures_par_jour[(heures_par_jour == 23) | (heures_par_jour == 25)]
 
-        st.subheader("⏱ Changements d'heure détectés")
-        if jours_23_25.empty:
-            st.success("✅ Aucun changement d'heure détecté dans la période.")
+        st.subheader("📊 Changements d'heure détectés")
+        if changements_heure.empty:
+            st.success("✅ Aucun changement d'heure détecté sur la période.")
         else:
-            st.warning("⚠️ Jours avec 23h ou 25h (passage heure d'été / hiver) :")
-            st.dataframe(jours_23_25)
+            st.warning("⚠️ Changements d'heure (23h ou 25h) :")
+            st.dataframe(changements_heure)
 
         # 10. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
@@ -107,44 +105,43 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe sur l’ensemble des données (avec lissage)
+        # 12. Courbe sur l’ensemble des données
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
-        df_plot["Conso_Smooth"] = df_plot["Moyenne_Conso"].rolling(window=24, min_periods=1).mean()
 
-        fig_full = px.area(
+        fig_full = px.line(
             df_plot,
             x="Datetime",
-            y="Conso_Smooth",
-            title="📈 Évolution de la consommation (ensemble des données, lissé 24h)",
+            y="Moyenne_Conso",
+            title="📈 Évolution de la consommation (ensemble des données)",
         )
-        fig_full.update_traces(line=dict(width=2, color="crimson"), fill="tozeroy", opacity=0.7)
+        fig_full.update_traces(line=dict(width=2))
         fig_full.update_layout(
             xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne (lissée)",
+            yaxis_title="Consommation moyenne",
             template="plotly_dark",
             hovermode="x unified"
         )
         st.plotly_chart(fig_full, use_container_width=True)
 
-        # 13. Heatmap consommation
+        # 13. Heatmap consommation par jour et heure
         st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
 
-        df["JourSemaine"] = df["Horodate"].dt.day_name(locale="fr_FR")
-        df["HeureNum"] = df["Horodate"].dt.hour
+        # Ajouter colonnes nécessaires
+        jours_fr = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
+        df["JourSemaine"] = df["Horodate"].dt.dayofweek.map(jours_fr)
+        df["HeureJour"] = df["Horodate"].dt.hour
 
         heatmap_data = df.pivot_table(
-            index="HeureNum",
+            index="HeureJour",
             columns="JourSemaine",
-            values="Valeur",
+            values="Moyenne_Conso",
             aggfunc="mean"
         )
 
         fig, ax = plt.subplots(figsize=(10, 6))
-        sns.heatmap(heatmap_data, cmap="RdYlGn_r", linewidths=0.3, annot=False, ax=ax)
-        ax.set_title("Heatmap consommation par heure et jour de semaine", fontsize=14, weight="bold")
-        ax.set_xlabel("Jour de semaine")
-        ax.set_ylabel("Heure de la journée")
+        sns.heatmap(heatmap_data, cmap="RdYlGn_r", ax=ax, cbar_kws={'label': 'Consommation moyenne'})
+        ax.set_title("Consommation moyenne par heure et jour de semaine", fontsize=14, fontweight="bold")
         st.pyplot(fig)
 
         # 14. Export
