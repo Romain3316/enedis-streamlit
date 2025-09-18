@@ -93,13 +93,23 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 6. Gestion des trous si "forcer 24h/jour"
+        # 6. Gestion des trous
         if mode_horaire == "Forcer 24h/jour":
             full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
             df = df.set_index("Horodate").reindex(full_range)
             df.index.name = "Horodate"
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
+        else:
+            # ✅ Vérification jours incomplets
+            diag = df.groupby(df["Horodate"].dt.date).size()
+            jours_incomplets = diag[diag != 24]
+
+            if not jours_incomplets.empty:
+                st.warning("⚠️ Jours avec un nombre d'heures différent de 24 détectés :")
+                st.dataframe(jours_incomplets)
+            else:
+                st.success("✅ Tous les jours ont bien 24 relevés")
 
         # 7. Colonnes finales
         df["Date"] = df["Horodate"].dt.date
