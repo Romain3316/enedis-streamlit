@@ -36,25 +36,24 @@ if uploaded_file:
         elif pas in ["PT60M", "PT1H"]:
             return pd.Timedelta(hours=1)
         else:
-            return pd.Timedelta(0)  # sécurité
+            return pd.Timedelta(0)
 
     df["Offset"] = df["Pas"].apply(get_offset)
 
-    # ✅ Option 2 : placer la valeur au milieu du pas
+    # ✅ Décalage au milieu du pas
     df["Horodate"] = df["Horodate"] - (df["Offset"] / 2)
+
+    # 🚨 Supprimer la première ligne (consommation partielle de la veille)
+    df = df.iloc[1:].reset_index(drop=True)
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # ⚡ Correction du problème de démarrage → filtrage dates valides
-    if not df["Horodate"].dropna().empty:
-        debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
-        st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
-                f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
-    else:
-        st.error("❌ Aucune date valide détectée après correction.")
-        st.stop()
+    # ⚡ Correction du problème de démarrage
+    debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
+    st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
+            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
 
     # 5. Années disponibles
     annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
@@ -72,7 +71,6 @@ if uploaded_file:
 
     format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
-    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -80,7 +78,6 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
 
-    # Bouton traitement
     if st.button("🚀 Lancer le traitement"):
 
         # 7. Filtrage période
@@ -92,7 +89,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 8. Agrégation selon le mode choisi
+        # 8. Agrégation
         if mode_horaire == "Heures réelles (23h / 25h)":
             df["Horodate_hour"] = df["Horodate"].dt.floor("H")
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
@@ -104,7 +101,7 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Diagnostic des heures par jour (uniquement changement d’heure)
+        # 9. Diagnostic : uniquement changements d'heure
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
         changements_heure = heures_par_jour[(heures_par_jour == 23) | (heures_par_jour == 25)]
 
@@ -126,7 +123,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe sur l’ensemble des données
+        # 12. Graphique global
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
