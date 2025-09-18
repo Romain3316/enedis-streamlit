@@ -2,6 +2,8 @@ import pandas as pd
 import streamlit as st
 from io import BytesIO
 import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 st.title("📊 Traitement des données Enedis")
 
@@ -23,33 +25,41 @@ if uploaded_file:
     # 2. Conversion datetime
     df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
 
-    # 3. Nettoyage → garder uniquement W et kW
+    # 3. Nettoyage
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df = df.dropna(subset=["Horodate", "Valeur"]).copy()
+    df = df.dropna(subset=["Horodate", "Valeur"]).reset_index(drop=True)
 
-    # ⚡ Supprimer la toute première ligne parasite (23h55 → 00h00 de la veille)
+    # ⚡ Supprimer la première ligne (correspond au 23h55 → 00h00 de la veille)
     df = df.iloc[1:].reset_index(drop=True)
 
-    # ⚡ Trouver la première journée complète (24 valeurs)
+    # ⚡ Trouver le premier jour complet
     heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-    premier_jour_valide = heures_par_jour[heures_par_jour == 24].index.min()
+    jours_valides = heures_par_jour[heures_par_jour == 24]
 
-    # ⚡ Supprimer toutes les lignes avant le premier jour valide
-    df = df[df["Horodate"].dt.date >= premier_jour_valide].reset_index(drop=True)
+    if not jours_valides.empty:
+        premier_jour_valide = jours_valides.index.min()
+        df = df[df["Horodate"].dt.date >= premier_jour_valide].reset_index(drop=True)
+    else:
+        st.warning("⚠️ Aucun jour complet détecté → conservation de toutes les données après la 1ʳᵉ ligne.")
 
-    # Recalculer le vrai début et fin
+    # 4. Vérification des bornes
     debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
+    if pd.notna(debut_brut) and pd.notna(fin_brut):
+        st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
+                f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+    else:
+        st.error("⚠️ Impossible de déterminer les bornes des données après filtrage.")
+        st.stop()
 
-    # 4. Afficher les bornes + pas
-    pas_moyen = df["Horodate"].diff().median()
-    st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
-            f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
-    st.info(f"⏱ Pas de temps détecté : {pas_moyen.components.minutes} min")
-
-    # 5. Années disponibles
-    annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
+    # 5. Pas de temps
+    pas_detecte = df["Horodate"].diff().min()
+    if pd.notna(pas_detecte):
+        st.info(f"⏱ Pas de temps détecté : {pas_detecte.components.minutes} min")
+    else:
+        st.warning("⏱ Impossible de détecter le pas de temps.")
 
     # 6. Widgets Streamlit
+    annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -62,6 +72,7 @@ if uploaded_file:
 
     format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
+    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -81,7 +92,7 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
 
-        # 8. Agrégation selon le mode choisi
+        # 8. Mode horaire
         if mode_horaire == "Heures réelles (23h / 25h)":
             df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
@@ -93,29 +104,17 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Changements d'heure réels (23h / 25h uniquement)
-        heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-        changements_heure = heures_par_jour[heures_par_jour.isin([23, 25])]
-
-        st.subheader("⏳ Changements d'heure détectés")
-        if changements_heure.empty:
-            st.success("✅ Aucun changement d'heure détecté sur la période.")
-        else:
-            st.warning("⚠️ Changements d'heure détectés :")
-            st.dataframe(changements_heure)
-
-        # 10. Format final
+        # 9. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
         df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
         df["Moyenne_Conso"] = df["Valeur"]
-
         df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
-        # 11. Aperçu
+        # 10. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe sur l’ensemble des données
+        # 11. Courbe complète
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -133,6 +132,20 @@ if uploaded_file:
             hovermode="x unified"
         )
         st.plotly_chart(fig_full, use_container_width=True)
+
+        # 12. Heatmap jour × heure
+        st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
+        df["JourSemaine"] = df["Horodate"].dt.dayofweek
+        df["HeureJour"] = df["Horodate"].dt.hour
+        heatmap_data = df.pivot_table(
+            index="JourSemaine", columns="HeureJour", values="Valeur", aggfunc="mean"
+        )
+
+        plt.figure(figsize=(14, 5))
+        sns.heatmap(heatmap_data, cmap="RdYlGn_r", cbar_kws={"label": "Conso moyenne"})
+        plt.xlabel("Heure de la journée")
+        plt.ylabel("Jour de la semaine (0=Lundi)")
+        st.pyplot(plt)
 
         # 13. Export
         if format_export == "CSV":
