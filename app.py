@@ -59,7 +59,33 @@ if uploaded_file:
     # 3. Agrégation horaire
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
-    # 4. Colonnes finales
+    # 4. Années disponibles
+    annees_dispo = sorted(df["Horodate"].dt.year.unique().tolist())
+
+    # 5. Widgets Streamlit
+    choix_periode = st.selectbox(
+        "📅 Choisissez la période à exporter :",
+        ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
+    )
+
+    if choix_periode == "Période personnalisée":
+        col1, col2 = st.columns(2)
+        with col1:
+            date_debut = st.date_input("Date de début", value=df["Horodate"].min().date())
+        with col2:
+            date_fin = st.date_input("Date de fin", value=df["Horodate"].max().date())
+
+    # === Filtrage selon le choix ===
+    if choix_periode not in ["Toutes les données", "Période personnalisée"]:
+        annee = int(choix_periode)
+        df = df[df["Horodate"].dt.year == annee]
+
+    elif choix_periode == "Période personnalisée":
+        debut = pd.to_datetime(date_debut)
+        fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        df = df[(df["Horodate"] >= debut) & (df["Horodate"] <= fin)]
+
+    # 6. Colonnes finales
     df["Date"] = df["Horodate"].dt.date
     df["Heure"] = df["Horodate"].dt.time
     df["Moyenne_Conso"] = df["Valeur"]
