@@ -32,18 +32,24 @@ if uploaded_file:
 
     # 3. Nettoyage → garder uniquement W et kW + dates valides
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df = df.dropna(subset=["Horodate", "Valeur"])
+    df = df.dropna(subset=["Horodate", "Valeur"]).sort_values("Horodate").reset_index(drop=True)
 
     # 4. Détection du pas de temps
     if len(df) > 1:
-        pas_detecte = df["Horodate"].diff().min()
+        diffs = df["Horodate"].diff().dropna()
+        pas_detecte = diffs.mode()[0]  # le pas le plus fréquent
+        # format lisible (ex : 5min ou 1h)
+        if pas_detecte.seconds % 3600 == 0:
+            pas_affiche = f"{pas_detecte.seconds // 3600}h"
+        else:
+            pas_affiche = f"{pas_detecte.seconds // 60} min"
     else:
-        pas_detecte = pd.Timedelta(0)
+        pas_affiche = "inconnu"
 
     st.info(
         f"📅 Données disponibles : du **{df['Horodate'].min().strftime('%d/%m/%Y %H:%M')}** "
         f"au **{df['Horodate'].max().strftime('%d/%m/%Y %H:%M')}**\n\n"
-        f"⏱ Pas de temps détecté : **{pas_detecte}**"
+        f"⏱ Pas de temps détecté : **{pas_affiche}**"
     )
 
     # 5. Années disponibles
@@ -87,76 +93,4 @@ if uploaded_file:
             df = df.rename(columns={"Horodate_hour": "Horodate"})
         else:
             full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-            df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reindex(full_range)
-            df.index.name = "Horodate"
-            df["Valeur"] = df["Valeur"].interpolate(method="linear")
-            df = df.reset_index()
-
-        # 9. Détection changements d'heure (23h ou 25h)
-        heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-        jours_chgmt_heure = heures_par_jour[heures_par_jour.isin([23, 25])]
-
-        st.subheader("⏳ Changements d'heure détectés")
-        if jours_chgmt_heure.empty:
-            st.success("✅ Aucun changement d'heure détecté sur la période.")
-        else:
-            st.warning("⚠️ Changements d'heure détectés :")
-            st.dataframe(jours_chgmt_heure)
-
-        # 10. Format final
-        df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
-        df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
-        df["Moyenne_Conso"] = df["Valeur"]
-
-        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
-
-        # 11. Aperçu
-        st.subheader("📋 Aperçu des données traitées")
-        st.dataframe(df_final.head(20))
-
-        # 12. Courbe
-        df_plot = df_final.copy()
-        df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
-
-        fig_full = px.line(
-            df_plot,
-            x="Datetime",
-            y="Moyenne_Conso",
-            title="📈 Évolution de la consommation (ensemble des données)",
-        )
-        fig_full.update_traces(line=dict(width=2), fill="tozeroy")
-        fig_full.update_layout(
-            xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne",
-            template="plotly_dark",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_full, use_container_width=True)
-
-        # 13. Heatmap
-        st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
-        jours_fr = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
-        df["JourSemaine"] = df["Horodate"].dt.dayofweek.map(jours_fr)
-        df["HeureNum"] = df["Horodate"].dt.hour
-
-        pivot = df.pivot_table(index="HeureNum", columns="JourSemaine", values="Moyenne_Conso", aggfunc="mean")
-
-        plt.figure(figsize=(12, 6))
-        sns.heatmap(pivot, cmap="RdYlGn_r", annot=False)
-        plt.title("Heatmap consommation par heure et jour de semaine")
-        st.pyplot(plt)
-
-        # 14. Export
-        if format_export == "CSV":
-            csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
-            st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
-        else:
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df_final.to_excel(writer, index=False)
-            st.download_button(
-                "⬇️ Télécharger en Excel",
-                output.getvalue(),
-                "donnees_enedis.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            df = df.set
