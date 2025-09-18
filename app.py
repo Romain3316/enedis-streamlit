@@ -27,13 +27,20 @@ if uploaded_file:
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"]).copy()
 
-    # ⚡ Correction : supprimer la toute première ligne parasite
+    # ⚡ Supprimer la toute première ligne parasite (23h55 → 00h00 de la veille)
     df = df.iloc[1:].reset_index(drop=True)
+
+    # ⚡ Trouver la première journée complète (24 valeurs)
+    heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
+    premier_jour_valide = heures_par_jour[heures_par_jour == 24].index.min()
+
+    # ⚡ Supprimer toutes les lignes avant le premier jour valide
+    df = df[df["Horodate"].dt.date >= premier_jour_valide].reset_index(drop=True)
 
     # Recalculer le vrai début et fin
     debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
 
-    # 4. Afficher les bornes
+    # 4. Afficher les bornes + pas
     pas_moyen = df["Horodate"].diff().median()
     st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
             f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
@@ -86,7 +93,7 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Diagnostic des heures par jour (seulement 23h ou 25h)
+        # 9. Changements d'heure réels (23h / 25h uniquement)
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
         changements_heure = heures_par_jour[heures_par_jour.isin([23, 25])]
 
