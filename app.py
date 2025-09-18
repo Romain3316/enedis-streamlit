@@ -2,6 +2,8 @@ import pandas as pd
 import streamlit as st
 from io import BytesIO
 import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 st.title("📊 Traitement des données Enedis")
 
@@ -27,7 +29,7 @@ if uploaded_file:
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
     df = df.dropna(subset=["Horodate", "Valeur"])
 
-    # ⚠️ Correction : ne commencer qu’au 12/06/2023
+    # ⚠️ Correction : démarrage au 12/06/2023
     df = df[df["Horodate"] >= pd.Timestamp("2023-06-12 00:00:00")]
 
     # 4. Vérification des bornes
@@ -83,22 +85,16 @@ if uploaded_file:
             df["Valeur"] = df["Valeur"].interpolate(method="linear")
             df = df.reset_index()
 
-        # 9. Diagnostic des heures par jour
+        # 9. Diagnostic (afficher uniquement 23h/25h)
         heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
-
         jours_23_25 = heures_par_jour[(heures_par_jour == 23) | (heures_par_jour == 25)]
-        jours_incomplets = heures_par_jour[(heures_par_jour < 23) | (heures_par_jour > 25)]
 
-        st.subheader("📊 Diagnostic des heures par jour")
-        if jours_23_25.empty and jours_incomplets.empty:
-            st.success("✅ Toutes les journées comptent exactement 24 heures.")
+        st.subheader("⏱ Changements d'heure détectés")
+        if jours_23_25.empty:
+            st.success("✅ Aucun changement d'heure détecté dans la période.")
         else:
-            if not jours_23_25.empty:
-                st.warning("⚠️ Jours avec 23h ou 25h détectés (changements d’heure) :")
-                st.dataframe(jours_23_25)
-            if not jours_incomplets.empty:
-                st.error("❌ Jours incomplets détectés (moins de 23h ou plus de 25h) :")
-                st.dataframe(jours_incomplets)
+            st.warning("⚠️ Jours avec 23h ou 25h (passage heure d'été / hiver) :")
+            st.dataframe(jours_23_25)
 
         # 10. Format final
         df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
@@ -111,31 +107,9 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe de prévisualisation (20 lignes)
-        preview = df_final.head(20).copy()
-        preview["Datetime"] = pd.to_datetime(preview["Date"] + " " + preview["Heure"], dayfirst=True)
-
-        fig_preview = px.line(
-            preview,
-            x="Datetime",
-            y="Moyenne_Conso",
-            markers=True,
-            title="⚡ Évolution de la consommation (aperçu sur 20 lignes)",
-        )
-        fig_preview.update_traces(line=dict(width=3), fill="tozeroy")
-        fig_preview.update_layout(
-            xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne",
-            template="plotly_dark",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_preview, use_container_width=True)
-
-        # 13. Courbe stylisée sur l’ensemble des données
+        # 12. Courbe sur l’ensemble des données (avec lissage)
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
-
-        # Lissage 24h
         df_plot["Conso_Smooth"] = df_plot["Moyenne_Conso"].rolling(window=24, min_periods=1).mean()
 
         fig_full = px.area(
@@ -144,7 +118,6 @@ if uploaded_file:
             y="Conso_Smooth",
             title="📈 Évolution de la consommation (ensemble des données, lissé 24h)",
         )
-
         fig_full.update_traces(line=dict(width=2, color="crimson"), fill="tozeroy", opacity=0.7)
         fig_full.update_layout(
             xaxis_title="Date et heure",
@@ -153,6 +126,26 @@ if uploaded_file:
             hovermode="x unified"
         )
         st.plotly_chart(fig_full, use_container_width=True)
+
+        # 13. Heatmap consommation
+        st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
+
+        df["JourSemaine"] = df["Horodate"].dt.day_name(locale="fr_FR")
+        df["HeureNum"] = df["Horodate"].dt.hour
+
+        heatmap_data = df.pivot_table(
+            index="HeureNum",
+            columns="JourSemaine",
+            values="Valeur",
+            aggfunc="mean"
+        )
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.heatmap(heatmap_data, cmap="RdYlGn_r", linewidths=0.3, annot=False, ax=ax)
+        ax.set_title("Heatmap consommation par heure et jour de semaine", fontsize=14, weight="bold")
+        ax.set_xlabel("Jour de semaine")
+        ax.set_ylabel("Heure de la journée")
+        st.pyplot(fig)
 
         # 14. Export
         if format_export == "CSV":
