@@ -59,21 +59,7 @@ if uploaded_file:
     # 3. Agrégation horaire
     df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reset_index()
 
-    # 🔥 Correction trous dans la courbe
-    st.subheader("⚙️ Options de gestion des trous")
-    trous_mode = st.radio(
-        "Choisissez le mode de traitement des trous horaires :",
-        ["Interpolation linéaire", "Remplissage par 0", "Conserver vides"]
-    )
-
-    full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
-    df = df.set_index("Horodate").reindex(full_range).rename_axis("Horodate").reset_index()
-
-    if trous_mode == "Interpolation linéaire":
-        df["Valeur"] = df["Valeur"].interpolate()
-    elif trous_mode == "Remplissage par 0":
-        df["Valeur"] = df["Valeur"].fillna(0)
-
+    # 4. Colonnes finales
     df["Date"] = df["Horodate"].dt.date
     df["Heure"] = df["Horodate"].dt.time
     df["Moyenne_Conso"] = df["Valeur"]
