@@ -20,12 +20,24 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
-    # 2. Conversion datetime en JJ/MM/AAAA
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
+    # 2. Conversion datetime au format JJ/MM/AAAA HH:MM
+    df["Horodate"] = pd.to_datetime(
+        df["Horodate"],
+        format="%d/%m/%Y %H:%M",
+        errors="coerce"
+    )
+
+    # ⚡ Supprimer lignes invalides
+    df = df.dropna(subset=["Horodate", "Valeur"])
+
+    # ⚡ Supprimer tout avant le 12/06/2023
+    df = df[df["Horodate"] >= pd.Timestamp("2023-06-12 00:00:00")]
+
+    # ⚡ Supprimer doublons exacts (même horodate)
+    df = df.drop_duplicates(subset=["Horodate"], keep="first")
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
-    df = df.dropna(subset=["Horodate", "Valeur"])
 
     # 4. Vérification des bornes
     debut_brut, fin_brut = df["Horodate"].min(), df["Horodate"].max()
@@ -70,8 +82,8 @@ if uploaded_file:
 
         # 8. Agrégation selon le mode choisi
         if mode_horaire == "Heures réelles (23h / 25h)":
-            # ⚡ Grouper par heure réelle → conserve les 23h/25h
-            df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
+            # ⚡ Grouper par heure réelle
+            df["Horodate_hour"] = df["Horodate"].dt.floor("H")
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
             df = df.rename(columns={"Horodate_hour": "Horodate"})
         else:
@@ -104,27 +116,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe de prévisualisation
-        preview = df_final.head(20).copy()
-        preview["Datetime"] = pd.to_datetime(preview["Date"] + " " + preview["Heure"], dayfirst=True)
-
-        fig_preview = px.line(
-            preview,
-            x="Datetime",
-            y="Moyenne_Conso",
-            markers=True,
-            title="⚡ Évolution de la consommation (aperçu sur 20 lignes)",
-        )
-        fig_preview.update_traces(line=dict(width=3), fill="tozeroy")
-        fig_preview.update_layout(
-            xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne",
-            template="plotly_dark",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_preview, use_container_width=True)
-
-        # 13. Courbe sur l’ensemble des données
+        # 12. Courbe sur l’ensemble des données
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -143,7 +135,7 @@ if uploaded_file:
         )
         st.plotly_chart(fig_full, use_container_width=True)
 
-        # 14. Export
+        # 13. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
