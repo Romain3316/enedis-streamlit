@@ -3,6 +3,8 @@ import streamlit as st
 from io import BytesIO
 import plotly.express as px
 
+# === Logo CMA ===
+st.image("logo-cma-na.png", width=250)
 st.title("📊 Traitement des données Enedis")
 
 # 1. Import fichier
@@ -21,7 +23,15 @@ if uploaded_file:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
     # 2. Conversion datetime en JJ/MM/AAAA
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
+    df["Horodate"] = pd.to_datetime(
+        df["Horodate"],
+        errors="coerce",
+        dayfirst=True,
+        infer_datetime_format=True
+    )
+
+    # ⚡ Supprimer tout avant le 12/06/2023
+    df = df[df["Horodate"] >= pd.to_datetime("2023-06-12")]
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
@@ -104,27 +114,7 @@ if uploaded_file:
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe de prévisualisation
-        preview = df_final.head(20).copy()
-        preview["Datetime"] = pd.to_datetime(preview["Date"] + " " + preview["Heure"], dayfirst=True)
-
-        fig_preview = px.line(
-            preview,
-            x="Datetime",
-            y="Moyenne_Conso",
-            markers=True,
-            title="⚡ Évolution de la consommation (aperçu sur 20 lignes)",
-        )
-        fig_preview.update_traces(line=dict(width=3), fill="tozeroy")
-        fig_preview.update_layout(
-            xaxis_title="Date et heure",
-            yaxis_title="Consommation moyenne",
-            template="plotly_dark",
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_preview, use_container_width=True)
-
-        # 13. Courbe sur l’ensemble des données
+        # 12. Courbe sur l’ensemble des données
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -143,7 +133,7 @@ if uploaded_file:
         )
         st.plotly_chart(fig_full, use_container_width=True)
 
-        # 14. Export
+        # 13. Export
         if format_export == "CSV":
             csv = df_final.to_csv(index=False, sep=";").encode("utf-8")
             st.download_button("⬇️ Télécharger en CSV", csv, "donnees_enedis.csv", "text/csv")
