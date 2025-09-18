@@ -39,7 +39,9 @@ if uploaded_file:
             return pd.Timedelta(0)  # sécurité
 
     df["Offset"] = df["Pas"].apply(get_offset)
-    df["Horodate"] = df["Horodate"] - df["Offset"]
+
+    # ✅ Option 2 : placer la valeur au milieu du pas
+    df["Horodate"] = df["Horodate"] - (df["Offset"] / 2)
 
     # 3. Nettoyage → garder uniquement W et kW
     df = df[df["Unité"].str.upper().isin(["W", "KW"])]
@@ -92,12 +94,10 @@ if uploaded_file:
 
         # 8. Agrégation selon le mode choisi
         if mode_horaire == "Heures réelles (23h / 25h)":
-            # ⚡ Grouper par heure réelle → conserve les 23h/25h
-            df["Horodate_hour"] = df["Horodate"].dt.floor("H") + pd.Timedelta(hours=1)
+            df["Horodate_hour"] = df["Horodate"].dt.floor("H")
             df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
             df = df.rename(columns={"Horodate_hour": "Horodate"})
         else:
-            # ⚡ Forcer 24h/jour → resample + interpolation
             full_range = pd.date_range(df["Horodate"].min(), df["Horodate"].max(), freq="1H")
             df = df.set_index("Horodate").resample("1H").mean(numeric_only=True).reindex(full_range)
             df.index.name = "Horodate"
@@ -147,14 +147,17 @@ if uploaded_file:
 
         # 13. Heatmap jour/heure
         st.subheader("🔥 Heatmap de la consommation (jour vs heure)")
-        df["JourSemaine"] = df["Horodate"].dt.dayofweek  # 0 = Lundi
+        jours_fr = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
+        df["JourSemaine"] = df["Horodate"].dt.dayofweek.map(jours_fr)
         df["HeureJour"] = df["Horodate"].dt.hour
+
         heatmap_data = df.pivot_table(
             index="HeureJour", columns="JourSemaine", values="Moyenne_Conso", aggfunc="mean"
         )
+
         fig_heatmap = px.imshow(
             heatmap_data,
-            labels=dict(x="Jour de semaine (0=Lundi)", y="Heure de la journée", color="Conso moyenne"),
+            labels=dict(x="Jour de semaine", y="Heure de la journée", color="Conso moyenne"),
             aspect="auto",
             color_continuous_scale="RdYlGn_r"
         )
