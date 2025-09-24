@@ -3,13 +3,12 @@ import streamlit as st
 from io import BytesIO
 import plotly.express as px
 
+st.set_page_config(page_title="Traitement des données Enedis", layout="wide")
 st.title("📊 Traitement des données Enedis")
 
-# ==========================
 # 1. Import fichier
-# ==========================
 uploaded_file = st.file_uploader(
-    "Choisissez un fichier Enedis (Excel ou CSV)",
+    "Choisissez un fichier Enedis (Excel ou CSV)", 
     type=["xlsx", "xls", "csv"]
 )
 
@@ -23,31 +22,32 @@ if uploaded_file:
         df = pd.read_excel(uploaded_file, usecols=usecols, dtype={"Unité": "string"})
 
     # 2. Conversion datetime
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
+    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce")
     df = df.dropna(subset=["Horodate", "Valeur"])
-    df = df.sort_values("Horodate")
 
-    # 3. Détection du pas de temps
-    pas = df["Horodate"].diff().mode()[0]
-    st.info(f"⏱ Pas de temps détecté : {pas}")
+    # 3. Tri chrono
+    df = df.sort_values("Horodate").reset_index(drop=True)
 
-    # 4. Décalage des horodatages (chaque valeur est la conso jusqu’à l’horodate)
-    df["Horodate_corrige"] = df["Horodate"] - pas
+    # 4. Détection du pas de temps
+    pas = df["Horodate"].diff().min()
+    if pd.isna(pas):
+        st.error("Impossible de détecter le pas de temps.")
+        st.stop()
 
-    # ⚠️ Supprimer la première ligne après décalage (elle correspondrait à 23h-00h mais est incomplète)
+    # Supprimer la première ligne car elle représente la conso de la veille
     df = df.iloc[1:].reset_index(drop=True)
 
-    # 5. Vérification des bornes après correction
-    debut_brut, fin_brut = df["Horodate_corrige"].min(), df["Horodate"].max()
+    # Décaler les horodatages restants
+    df["Horodate_corrige"] = df["Horodate"] - pas
+
+    # 5. Vérification des bornes
+    debut_brut, fin_brut = df["Horodate_corrige"].min(), df["Horodate_corrige"].max()
     st.info(f"📅 Données disponibles : du **{debut_brut.strftime('%d/%m/%Y %H:%M')}** "
             f"au **{fin_brut.strftime('%d/%m/%Y %H:%M')}**")
+    st.info(f"⏱ Pas de temps détecté : {pas.components.hours*60 + pas.components.minutes} min")
 
     # 6. Années disponibles
     annees_dispo = sorted(df["Horodate_corrige"].dt.year.unique().tolist())
-
-    # ==========================
-    # Widgets Streamlit
-    # ==========================
     choix_periode = st.selectbox(
         "📅 Choisissez la période à exporter :",
         ["Toutes les données"] + [str(a) for a in annees_dispo] + ["Période personnalisée"]
@@ -60,6 +60,7 @@ if uploaded_file:
 
     format_export = st.radio("📂 Format d'export :", ["CSV", "Excel"])
 
+    # Période personnalisée
     if choix_periode == "Période personnalisée":
         col1, col2 = st.columns(2)
         with col1:
@@ -67,9 +68,7 @@ if uploaded_file:
         with col2:
             date_fin = st.date_input("Date de fin", value=df["Horodate_corrige"].max().date())
 
-    # ==========================
     # Bouton traitement
-    # ==========================
     if st.button("🚀 Lancer le traitement"):
 
         # 7. Filtrage période
@@ -81,20 +80,20 @@ if uploaded_file:
             fin = pd.to_datetime(date_fin) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             df = df[(df["Horodate_corrige"] >= debut) & (df["Horodate_corrige"] <= fin)]
 
-        # 8. Agrégation selon le mode choisi
+        # 8. Agrégation horaire
         if mode_horaire == "Heures réelles (23h / 25h)":
             df["Horodate_hour"] = df["Horodate_corrige"].dt.floor("H") + pd.Timedelta(hours=1)
-            df_grouped = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
-            df_grouped = df_grouped.rename(columns={"Horodate_hour": "Horodate"})
+            df = df.groupby("Horodate_hour", as_index=False)["Valeur"].mean()
+            df = df.rename(columns={"Horodate_hour": "Horodate"})
         else:
             full_range = pd.date_range(df["Horodate_corrige"].min(), df["Horodate_corrige"].max(), freq="1H")
-            df_grouped = df.set_index("Horodate_corrige").resample("1H").mean(numeric_only=True).reindex(full_range)
-            df_grouped.index.name = "Horodate"
-            df_grouped["Valeur"] = df_grouped["Valeur"].interpolate(method="linear")
-            df_grouped = df_grouped.reset_index()
+            df = df.set_index("Horodate_corrige").resample("1H").mean(numeric_only=True).reindex(full_range)
+            df.index.name = "Horodate"
+            df["Valeur"] = df["Valeur"].interpolate(method="linear")
+            df = df.reset_index()
 
-        # 9. Diagnostic des heures
-        heures_par_jour = df_grouped.groupby(df_grouped["Horodate"].dt.date).size()
+        # 9. Diagnostic changements d’heure
+        heures_par_jour = df.groupby(df["Horodate"].dt.date).size()
         jours_suspects = heures_par_jour[(heures_par_jour < 23) | (heures_par_jour > 25)]
 
         st.subheader("📊 Changements d'heure détectés")
@@ -105,17 +104,17 @@ if uploaded_file:
             st.dataframe(jours_suspects)
 
         # 10. Format final
-        df_grouped["Date"] = df_grouped["Horodate"].dt.strftime("%d/%m/%Y")
-        df_grouped["Heure"] = df_grouped["Horodate"].dt.strftime("%H:%M:%S")
-        df_grouped["Moyenne_Conso"] = df_grouped["Valeur"]
+        df["Date"] = df["Horodate"].dt.strftime("%d/%m/%Y")
+        df["Heure"] = df["Horodate"].dt.strftime("%H:%M:%S")
+        df["Moyenne_Conso"] = df["Valeur"]
 
-        df_final = df_grouped[["Date", "Heure", "Moyenne_Conso"]]
+        df_final = df[["Date", "Heure", "Moyenne_Conso"]]
 
         # 11. Aperçu
         st.subheader("📋 Aperçu des données traitées")
         st.dataframe(df_final.head(20))
 
-        # 12. Courbe sur l’ensemble des données
+        # 12. Graph complet
         df_plot = df_final.copy()
         df_plot["Datetime"] = pd.to_datetime(df_plot["Date"] + " " + df_plot["Heure"], dayfirst=True)
 
@@ -129,7 +128,7 @@ if uploaded_file:
         fig_full.update_layout(
             xaxis_title="Date et heure",
             yaxis_title="Consommation moyenne",
-            template="plotly_white",
+            template="plotly_dark",
             hovermode="x unified"
         )
         st.plotly_chart(fig_full, use_container_width=True)
