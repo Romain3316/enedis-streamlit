@@ -1,8 +1,27 @@
+
 import base64
 from io import BytesIO
 from pathlib import Path
 
 import requests
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    Image,
+    KeepTogether,
+    PageTemplate,
+    PageBreak,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 import numpy as np
 import pandas as pd
@@ -1330,6 +1349,634 @@ def build_daily_solar_summary(df: pd.DataFrame) -> pd.DataFrame:
     return daily
 
 
+
+def safe_pdf_text(value) -> str:
+    if value is None:
+        return ""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def figure_to_png_bytes(fig, width: int = 1100, height: int = 520) -> BytesIO:
+    image_bytes = fig.to_image(
+        format="png",
+        width=width,
+        height=height,
+        scale=1.5,
+    )
+    return BytesIO(image_bytes)
+
+
+def build_automatic_commentary(
+    daylight_share: float,
+    production_period_share: float,
+    self_consumption_rate: float,
+    self_sufficiency_rate: float,
+) -> dict:
+    if pd.isna(production_period_share):
+        profile = (
+            "L'adresse ou les données PVGIS ne sont pas disponibles. "
+            "L'analyse de correspondance solaire n'a pas pu être finalisée."
+        )
+    elif production_period_share >= 70:
+        profile = (
+            "Une part très importante de la consommation intervient pendant "
+            "les périodes de production photovoltaïque. Le profil paraît "
+            "particulièrement favorable à un projet orienté vers "
+            "l'autoconsommation."
+        )
+    elif production_period_share >= 50:
+        profile = (
+            "Une part significative de la consommation intervient pendant "
+            "les périodes de production photovoltaïque. Le profil semble "
+            "favorable, sous réserve des vérifications techniques et "
+            "économiques complémentaires."
+        )
+    elif production_period_share >= 30:
+        profile = (
+            "La consommation correspond partiellement aux périodes de "
+            "production solaire. Le projet mérite d'être approfondi afin "
+            "d'identifier un dimensionnement adapté."
+        )
+    else:
+        profile = (
+            "Une part limitée de la consommation intervient pendant les "
+            "périodes de production solaire. Un dimensionnement prudent et "
+            "une étude détaillée sont recommandés."
+        )
+
+    if pd.isna(self_consumption_rate):
+        self_consumption = "Le taux d'autoconsommation n'a pas pu être estimé."
+    elif self_consumption_rate >= 80:
+        self_consumption = (
+            "La majorité de l'électricité produite pourrait être consommée "
+            "directement sur le site, ce qui limite le surplus potentiel."
+        )
+    elif self_consumption_rate >= 55:
+        self_consumption = (
+            "Une part importante de la production pourrait être utilisée "
+            "directement par l'entreprise. Un surplus resterait toutefois "
+            "possible à certaines heures."
+        )
+    else:
+        self_consumption = (
+            "Une part notable de la production pourrait ne pas être consommée "
+            "immédiatement. La puissance étudiée devra être comparée à des "
+            "scénarios plus modestes ou à une solution de valorisation du surplus."
+        )
+
+    if pd.isna(self_sufficiency_rate):
+        self_sufficiency = "Le taux d'autoproduction n'a pas pu être estimé."
+    elif self_sufficiency_rate >= 40:
+        self_sufficiency = (
+            "La simulation indique qu'une part importante des besoins "
+            "électriques pourrait être couverte par la production solaire."
+        )
+    elif self_sufficiency_rate >= 20:
+        self_sufficiency = (
+            "La production solaire pourrait couvrir une part utile des besoins "
+            "électriques, sans rendre l'entreprise indépendante du réseau."
+        )
+    else:
+        self_sufficiency = (
+            "La production simulée couvrirait une part limitée des besoins. "
+            "Le réseau resterait la principale source d'électricité."
+        )
+
+    return {
+        "profile": profile,
+        "self_consumption": self_consumption,
+        "self_sufficiency": self_sufficiency,
+    }
+
+
+def create_cma_pdf_report(
+    company_name: str,
+    company_siret: str,
+    advisor_name: str,
+    diagnostic_date,
+    address_label: str,
+    latitude,
+    longitude,
+    source_filename: str,
+    period_start,
+    period_end,
+    source_unit: str,
+    time_step,
+    total_kwh: float,
+    average_daily_kwh: float,
+    maximum_power_kw: float,
+    daylight_share: float,
+    production_period_share: float,
+    pv_peak_kwp: float,
+    pv_tilt: float,
+    orientation_label: str,
+    pv_losses: float,
+    pvgis_production_kwh: float,
+    self_consumed_kwh: float,
+    self_consumption_rate: float,
+    self_sufficiency_rate: float,
+    monthly_df: pd.DataFrame,
+    weekday_hour_matrix: pd.DataFrame,
+    hourly_df: pd.DataFrame,
+    filtered_df: pd.DataFrame,
+    logo_path: Path | None,
+) -> bytes:
+    output = BytesIO()
+
+    page_width, page_height = A4
+    cma_blue = colors.HexColor("#17365D")
+    cma_red = colors.HexColor("#E53935")
+    light_blue = colors.HexColor("#EAF1F8")
+    light_grey = colors.HexColor("#F3F5F7")
+    dark_text = colors.HexColor("#202735")
+
+    def draw_page(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(cma_blue)
+        canvas.rect(0, page_height - 1.15 * cm, page_width, 1.15 * cm, fill=1, stroke=0)
+        canvas.setFillColor(cma_red)
+        canvas.rect(page_width - 4.2 * cm, page_height - 1.15 * cm, 4.2 * cm, 1.15 * cm, fill=1, stroke=0)
+        canvas.setFillColor(colors.HexColor("#697589"))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(1.6 * cm, 0.8 * cm, "Pré-diagnostic photovoltaïque - CMA Nouvelle-Aquitaine")
+        canvas.drawRightString(page_width - 1.6 * cm, 0.8 * cm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    frame = Frame(
+        1.55 * cm,
+        1.35 * cm,
+        page_width - 3.1 * cm,
+        page_height - 2.9 * cm,
+        id="normal",
+    )
+    template = PageTemplate(id="cma", frames=[frame], onPage=draw_page)
+    doc = BaseDocTemplate(
+        output,
+        pagesize=A4,
+        leftMargin=1.55 * cm,
+        rightMargin=1.55 * cm,
+        topMargin=1.55 * cm,
+        bottomMargin=1.35 * cm,
+        title="Pré-diagnostic photovoltaïque CMA",
+        author="CMA Nouvelle-Aquitaine",
+    )
+    doc.addPageTemplates([template])
+
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="CMA_Title",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=25,
+            leading=29,
+            textColor=cma_blue,
+            alignment=TA_LEFT,
+            spaceAfter=12,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_Subtitle",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=12,
+            leading=17,
+            textColor=dark_text,
+            spaceAfter=12,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_H1",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=17,
+            leading=21,
+            textColor=cma_blue,
+            spaceBefore=8,
+            spaceAfter=10,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_H2",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=13,
+            leading=16,
+            textColor=cma_red,
+            spaceBefore=8,
+            spaceAfter=7,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_Body",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=9.6,
+            leading=14,
+            textColor=dark_text,
+            spaceAfter=8,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_Small",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor("#5E6878"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_KPI_Value",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=15,
+            leading=18,
+            textColor=cma_blue,
+            alignment=TA_CENTER,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="CMA_KPI_Label",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=7.5,
+            leading=10,
+            textColor=colors.HexColor("#667287"),
+            alignment=TA_CENTER,
+        )
+    )
+
+    story = []
+
+    # Couverture
+    story.append(Spacer(1, 0.9 * cm))
+    if logo_path and logo_path.exists():
+        logo = Image(str(logo_path), width=6.0 * cm, height=2.1 * cm, kind="proportional")
+        story.append(logo)
+        story.append(Spacer(1, 0.45 * cm))
+
+    story.append(Paragraph("Pré-diagnostic photovoltaïque", styles["CMA_Title"]))
+    story.append(
+        Paragraph(
+            "Analyse pédagogique des consommations électriques et simulation "
+            "d'une installation photovoltaïque en autoconsommation.",
+            styles["CMA_Subtitle"],
+        )
+    )
+    story.append(Spacer(1, 0.45 * cm))
+
+    cover_data = [
+        ["Entreprise", safe_pdf_text(company_name or "Non renseignée")],
+        ["Adresse", safe_pdf_text(address_label or "Non renseignée")],
+        ["SIRET", safe_pdf_text(company_siret or "Non renseigné")],
+        ["Conseiller CMA", safe_pdf_text(advisor_name or "Non renseigné")],
+        ["Date du diagnostic", diagnostic_date.strftime("%d/%m/%Y")],
+        ["Période analysée", f"{period_start:%d/%m/%Y} au {period_end:%d/%m/%Y}"],
+    ]
+    cover_table = Table(cover_data, colWidths=[4.6 * cm, 11.2 * cm])
+    cover_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), light_blue),
+                ("TEXTCOLOR", (0, 0), (0, -1), cma_blue),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    story.append(cover_table)
+    story.append(Spacer(1, 1.0 * cm))
+    story.append(
+        Paragraph(
+            "<b>Important :</b> ce document constitue un pré-diagnostic. "
+            "Il ne remplace pas une étude de faisabilité technique, structurelle, "
+            "réglementaire et économique réalisée par des professionnels qualifiés.",
+            styles["CMA_Body"],
+        )
+    )
+    story.append(PageBreak())
+
+    # Synthèse
+    story.append(Paragraph("1. Synthèse de l'analyse", styles["CMA_H1"]))
+
+    kpi_data = [
+        [
+            Paragraph(f"{format_fr(total_kwh, 0)} kWh", styles["CMA_KPI_Value"]),
+            Paragraph(f"{format_fr(average_daily_kwh, 1)} kWh", styles["CMA_KPI_Value"]),
+            Paragraph(f"{format_fr(maximum_power_kw, 1)} kW", styles["CMA_KPI_Value"]),
+        ],
+        [
+            Paragraph("Consommation totale", styles["CMA_KPI_Label"]),
+            Paragraph("Moyenne par jour", styles["CMA_KPI_Label"]),
+            Paragraph("Pic de puissance", styles["CMA_KPI_Label"]),
+        ],
+        [
+            Paragraph(
+                f"{format_fr(production_period_share, 1)} %"
+                if not pd.isna(production_period_share)
+                else "N/D",
+                styles["CMA_KPI_Value"],
+            ),
+            Paragraph(
+                f"{format_fr(pvgis_production_kwh, 0)} kWh"
+                if not pd.isna(pvgis_production_kwh)
+                else "N/D",
+                styles["CMA_KPI_Value"],
+            ),
+            Paragraph(
+                f"{format_fr(self_consumption_rate, 1)} %"
+                if not pd.isna(self_consumption_rate)
+                else "N/D",
+                styles["CMA_KPI_Value"],
+            ),
+        ],
+        [
+            Paragraph("Conso. pendant la production PV", styles["CMA_KPI_Label"]),
+            Paragraph("Production PV estimée", styles["CMA_KPI_Label"]),
+            Paragraph("Taux d'autoconsommation", styles["CMA_KPI_Label"]),
+        ],
+    ]
+    kpi_table = Table(kpi_data, colWidths=[5.25 * cm] * 3)
+    kpi_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#DDE4EB")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E6EBF0")),
+                ("TOPPADDING", (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    story.append(kpi_table)
+    story.append(Spacer(1, 0.45 * cm))
+
+    comments = build_automatic_commentary(
+        daylight_share,
+        production_period_share,
+        self_consumption_rate,
+        self_sufficiency_rate,
+    )
+    story.append(Paragraph(comments["profile"], styles["CMA_Body"]))
+    story.append(Paragraph(comments["self_consumption"], styles["CMA_Body"]))
+    story.append(Paragraph(comments["self_sufficiency"], styles["CMA_Body"]))
+
+    # Graphique mensuel
+    fig_monthly_pdf = px.bar(
+        monthly_df,
+        x="Mois_date",
+        y="Consommation_kWh",
+        labels={"Mois_date": "Mois", "Consommation_kWh": "Consommation (kWh)"},
+        title="Consommation mensuelle",
+        color_discrete_sequence=["#17365D"],
+    )
+    fig_monthly_pdf.update_layout(template="plotly_white", showlegend=False)
+    month_img = Image(figure_to_png_bytes(fig_monthly_pdf), width=16.5 * cm, height=7.4 * cm)
+    story.append(month_img)
+    story.append(PageBreak())
+
+    # Profil hebdomadaire
+    story.append(Paragraph("2. Comprendre le profil de consommation", styles["CMA_H1"]))
+    story.append(
+        Paragraph(
+            "Le tableau ci-dessous présente la puissance moyenne appelée pour "
+            "chaque heure et chaque jour de la semaine. Les valeurs les plus "
+            "élevées signalent les périodes où l'activité consomme le plus.",
+            styles["CMA_Body"],
+        )
+    )
+
+    matrix = weekday_hour_matrix.copy().round(1)
+    matrix_rows = [["Heure"] + list(matrix.columns)]
+    for hour, row in matrix.iterrows():
+        matrix_rows.append(
+            [f"{int(hour):02d}h-{(int(hour)+1)%24:02d}h"]
+            + ["" if pd.isna(v) else f"{v:.1f}" for v in row]
+        )
+
+    heat_table = Table(
+        matrix_rows,
+        colWidths=[2.25 * cm] + [1.85 * cm] * 7,
+        repeatRows=1,
+    )
+    heat_styles = [
+        ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 6.8),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.white),
+        ("BACKGROUND", (0, 1), (0, -1), light_grey),
+    ]
+
+    numeric_values = matrix.to_numpy(dtype=float)
+    valid_values = numeric_values[np.isfinite(numeric_values)]
+    vmin = float(valid_values.min()) if valid_values.size else 0
+    vmax = float(valid_values.max()) if valid_values.size else 1
+    span = max(vmax - vmin, 1e-9)
+
+    for r_index, (_, row) in enumerate(matrix.iterrows(), start=1):
+        for c_index, value in enumerate(row, start=1):
+            if pd.isna(value):
+                bg = colors.white
+            else:
+                ratio = (float(value) - vmin) / span
+                if ratio < 0.25:
+                    bg = colors.HexColor("#63BE7B")
+                elif ratio < 0.50:
+                    bg = colors.HexColor("#A9D26D")
+                elif ratio < 0.70:
+                    bg = colors.HexColor("#FFEB84")
+                elif ratio < 0.87:
+                    bg = colors.HexColor("#F6B26B")
+                else:
+                    bg = colors.HexColor("#F8696B")
+            heat_styles.append(("BACKGROUND", (c_index, r_index), (c_index, r_index), bg))
+
+    heat_table.setStyle(TableStyle(heat_styles))
+    story.append(heat_table)
+    story.append(Spacer(1, 0.45 * cm))
+
+    profile_long = (
+        weekday_hour_matrix.reset_index()
+        .melt(id_vars="Heure", var_name="Jour", value_name="Puissance_kW")
+        .dropna()
+    )
+    fig_profiles_pdf = px.line(
+        profile_long,
+        x="Heure",
+        y="Puissance_kW",
+        color="Jour",
+        title="Profil horaire moyen selon le jour de la semaine",
+        labels={"Heure": "Heure", "Puissance_kW": "Puissance moyenne (kW)"},
+    )
+    fig_profiles_pdf.update_layout(template="plotly_white", hovermode="x unified")
+    story.append(Image(figure_to_png_bytes(fig_profiles_pdf), width=16.5 * cm, height=7.6 * cm))
+    story.append(PageBreak())
+
+    # Solaire
+    story.append(Paragraph("3. Potentiel solaire du site", styles["CMA_H1"]))
+    solar_info = [
+        ["Adresse analysée", safe_pdf_text(address_label or "Non renseignée")],
+        ["Coordonnées", f"{latitude:.6f}, {longitude:.6f}" if latitude is not None else "Non disponibles"],
+        ["Puissance étudiée", f"{pv_peak_kwp:g} kWc"],
+        ["Orientation", safe_pdf_text(orientation_label)],
+        ["Inclinaison", f"{pv_tilt:g}°"],
+        ["Pertes prises en compte", f"{pv_losses:g} %"],
+        ["Production PV estimée", f"{format_fr(pvgis_production_kwh, 0)} kWh" if not pd.isna(pvgis_production_kwh) else "Non disponible"],
+        ["Énergie autoconsommée estimée", f"{format_fr(self_consumed_kwh, 0)} kWh" if not pd.isna(self_consumed_kwh) else "Non disponible"],
+    ]
+    solar_table = Table(solar_info, colWidths=[5.2 * cm, 10.6 * cm])
+    solar_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), light_blue),
+                ("TEXTCOLOR", (0, 0), (0, -1), cma_blue),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.append(solar_table)
+    story.append(Spacer(1, 0.35 * cm))
+    story.append(
+        Paragraph(
+            "PVGIS estime le potentiel solaire à partir de la localisation, "
+            "de l'orientation, de l'inclinaison et de données climatiques de "
+            "référence. Les résultats ne correspondent pas à une mesure réelle "
+            "de chaque journée mais à une simulation adaptée au pré-diagnostic.",
+            styles["CMA_Body"],
+        )
+    )
+
+    if "Production_PV_kW" in filtered_df.columns:
+        solar_plot_pdf = filtered_df[
+            ["Horodate", "Puissance_kW", "Production_PV_kW"]
+        ].copy()
+        fig_compare_pdf = go.Figure()
+        fig_compare_pdf.add_trace(
+            go.Scatter(
+                x=solar_plot_pdf["Horodate"],
+                y=solar_plot_pdf["Puissance_kW"],
+                name="Consommation",
+                mode="lines",
+                line=dict(color="#17365D", width=1.3),
+            )
+        )
+        fig_compare_pdf.add_trace(
+            go.Scatter(
+                x=solar_plot_pdf["Horodate"],
+                y=solar_plot_pdf["Production_PV_kW"],
+                name="Production PV estimée",
+                mode="lines",
+                line=dict(color="#E53935", width=1.3),
+            )
+        )
+        fig_compare_pdf.update_layout(
+            title="Consommation et production photovoltaïque simulée",
+            xaxis_title="Date",
+            yaxis_title="Puissance (kW)",
+            template="plotly_white",
+            legend=dict(orientation="h"),
+        )
+        story.append(Image(figure_to_png_bytes(fig_compare_pdf), width=16.5 * cm, height=7.6 * cm))
+
+    story.append(PageBreak())
+
+    # Explications
+    story.append(Paragraph("4. Comment lire les résultats ?", styles["CMA_H1"]))
+    explanations = [
+        (
+            "Autoconsommation",
+            "Part de l'électricité solaire produite qui serait consommée "
+            "directement par l'entreprise au moment où elle est produite.",
+        ),
+        (
+            "Autoproduction",
+            "Part des besoins électriques de l'entreprise qui pourrait être "
+            "couverte par les panneaux photovoltaïques.",
+        ),
+        (
+            "Surplus",
+            "Électricité produite mais non consommée immédiatement. Elle peut, "
+            "selon le projet, être injectée sur le réseau ou faire l'objet "
+            "d'une autre stratégie de valorisation.",
+        ),
+        (
+            "Électricité achetée au réseau",
+            "Part de la consommation qui reste fournie par le réseau, notamment "
+            "la nuit ou lorsque la production solaire est insuffisante.",
+        ),
+    ]
+    for title, text in explanations:
+        story.append(Paragraph(title, styles["CMA_H2"]))
+        story.append(Paragraph(text, styles["CMA_Body"]))
+
+    story.append(Paragraph("5. Recommandations", styles["CMA_H1"]))
+    recommendations = [
+        "Vérifier la surface réellement disponible et les zones d'ombrage.",
+        "Faire contrôler l'état et la capacité portante de la toiture.",
+        "Comparer plusieurs puissances d'installation avant de retenir un scénario.",
+        "Intégrer les coûts, aides, tarifs d'achat et conditions de raccordement.",
+        "Faire confirmer le projet par un installateur qualifié et un bureau d'étude si nécessaire.",
+    ]
+    recommendation_rows = [
+        [Paragraph("• " + item, styles["CMA_Body"])]
+        for item in recommendations
+    ]
+    story.append(Table(recommendation_rows, colWidths=[15.8 * cm]))
+
+    story.append(Paragraph("6. Limites du pré-diagnostic", styles["CMA_H1"]))
+    story.append(
+        Paragraph(
+            "Ce rapport repose sur les données Enedis importées et sur une "
+            "simulation PVGIS. Il ne vérifie pas la structure du bâtiment, "
+            "les contraintes d'urbanisme, le raccordement, les ombrages fins, "
+            "les coûts d'installation, la fiscalité ou la rentabilité financière. "
+            "Les résultats doivent être confirmés dans le cadre d'une étude complète.",
+            styles["CMA_Body"],
+        )
+    )
+    story.append(Spacer(1, 0.4 * cm))
+    story.append(
+        Paragraph(
+            f"Fichier analysé : {safe_pdf_text(source_filename)} - "
+            f"unité source : {safe_pdf_text(source_unit)} - "
+            f"pas source : {safe_pdf_text(time_step)}.",
+            styles["CMA_Small"],
+        )
+    )
+
+    doc.build(story)
+    output.seek(0)
+    return output.getvalue()
+
+
 def format_fr(value: float, decimals: int = 1) -> str:
     return (
         f"{value:,.{decimals}f}"
@@ -1678,19 +2325,11 @@ with st.sidebar:
         format="%d%%",
     )
 
-    irradiation_threshold = st.slider(
-        "Seuil d'irradiation significative",
-        min_value=0,
-        max_value=500,
-        value=50,
-        step=10,
-        format="%d W/m²",
-    )
-
     st.caption(
         "Le lever et le coucher sont calculés pour chaque date à partir "
-        "des coordonnées exactes. L'irradiation et la production sont "
-        "estimées à partir de PVGIS."
+        "des coordonnées exactes. PVGIS estime automatiquement "
+        "l'irradiation et la production pour la localisation et les "
+        "caractéristiques de l'installation."
     )
 
 
@@ -1729,8 +2368,8 @@ solar_daily_df = pd.DataFrame()
 
 daylight_kwh = np.nan
 daylight_share = np.nan
-irradiated_kwh = np.nan
-irradiated_share = np.nan
+production_period_kwh = np.nan
+production_period_share = np.nan
 pvgis_production_kwh = np.nan
 self_consumed_kwh = np.nan
 self_consumption_rate = np.nan
@@ -1773,18 +2412,17 @@ if solar_analysis_available:
             )
             pvgis_available = True
 
-            irradiated_mask = (
-                filtered_df["Irradiation_Wm2"]
-                >= irradiation_threshold
+            production_active_mask = (
+                filtered_df["Production_PV_kW"].fillna(0) > 0
             )
 
-            irradiated_kwh = filtered_df.loc[
-                irradiated_mask,
+            production_period_kwh = filtered_df.loc[
+                production_active_mask,
                 "Energie_kWh",
             ].sum()
 
-            irradiated_share = (
-                irradiated_kwh / total_kwh * 100
+            production_period_share = (
+                production_period_kwh / total_kwh * 100
                 if total_kwh
                 else 0
             )
@@ -2138,14 +2776,14 @@ with tab_solar:
         )
 
         k2.metric(
-            f"Conso. avec ≥ {irradiation_threshold} W/m²",
+            "Conso. pendant la production PV",
             (
-                f"{format_fr(irradiated_kwh, 0)} kWh"
+                f"{format_fr(production_period_kwh, 0)} kWh"
                 if pvgis_available
                 else "PVGIS indisponible"
             ),
             (
-                f"{format_fr(irradiated_share, 1)} %"
+                f"{format_fr(production_period_share, 1)} %"
                 if pvgis_available
                 else None
             ),
@@ -2241,14 +2879,6 @@ with tab_solar:
                     "Irradiation_Wm2": "Irradiation (W/m²)",
                 },
                 color_discrete_sequence=[CMA_RED],
-            )
-
-            fig_irradiation.add_hline(
-                y=irradiation_threshold,
-                line_dash="dash",
-                annotation_text=(
-                    f"Seuil {irradiation_threshold} W/m²"
-                ),
             )
 
             fig_irradiation.update_layout(
@@ -2685,10 +3315,7 @@ with tab_export:
                 "Latitude",
                 "Longitude",
                 "Part de consommation pendant le jour (%)",
-                (
-                    f"Part avec irradiation ≥ "
-                    f"{irradiation_threshold} W/m² (%)"
-                ),
+                "Part de consommation pendant la production PV (%)",
                 "Puissance photovoltaïque étudiée (kWc)",
                 "Production PVGIS estimée (kWh)",
                 "Taux d'autoconsommation estimé (%)",
@@ -2733,7 +3360,7 @@ with tab_export:
                     else ""
                 ),
                 (
-                    irradiated_share
+                    production_period_share
                     if pvgis_available
                     else ""
                 ),
@@ -2907,6 +3534,66 @@ with tab_export:
 
     export1, export2 = st.columns(2)
 
+    logo_candidates = [
+        Path("logo_cma.png"),
+        Path("logo_cma.jpg"),
+        Path("assets/logo_cma.png"),
+        Path("assets/logo_cma.jpg"),
+    ]
+    report_logo_path = next(
+        (path for path in logo_candidates if path.exists()),
+        None,
+    )
+
+    pdf_ready = bool(
+        solar_analysis_available
+        and pvgis_available
+        and selected_location is not None
+    )
+
+    if pdf_ready:
+        try:
+            pdf_report_bytes = create_cma_pdf_report(
+                company_name=company_name,
+                company_siret=company_siret,
+                advisor_name=advisor_name,
+                diagnostic_date=diagnostic_date,
+                address_label=selected_location["label"],
+                latitude=selected_location["latitude"],
+                longitude=selected_location["longitude"],
+                source_filename=uploaded_file.name,
+                period_start=filtered_df["Horodate"].min(),
+                period_end=filtered_df["Horodate"].max(),
+                source_unit=source_unit,
+                time_step=time_step,
+                total_kwh=total_kwh,
+                average_daily_kwh=average_daily_kwh,
+                maximum_power_kw=maximum_power_kw,
+                daylight_share=daylight_share,
+                production_period_share=production_period_share,
+                pv_peak_kwp=pv_peak_kwp,
+                pv_tilt=pv_tilt,
+                orientation_label=orientation_label,
+                pv_losses=pv_losses,
+                pvgis_production_kwh=pvgis_production_kwh,
+                self_consumed_kwh=self_consumed_kwh,
+                self_consumption_rate=self_consumption_rate,
+                self_sufficiency_rate=self_sufficiency_rate,
+                monthly_df=monthly_df,
+                weekday_hour_matrix=weekday_hour_matrix,
+                hourly_df=hourly_df,
+                filtered_df=filtered_df,
+                logo_path=report_logo_path,
+            )
+        except Exception as exc:
+            pdf_report_bytes = None
+            st.error(
+                "Le rapport PDF n'a pas pu être généré. "
+                f"Détail : {exc}"
+            )
+    else:
+        pdf_report_bytes = None
+
     with export1:
         st.download_button(
             "⬇️ Télécharger le classeur Excel complet",
@@ -2932,6 +3619,41 @@ with tab_export:
             mime="text/csv",
             use_container_width=True,
         )
+
+    st.markdown("---")
+    st.subheader("Rapport pédagogique CMA")
+
+    if pdf_report_bytes:
+        pdf_filename_company = (
+            company_name.strip().replace(" ", "_")
+            if company_name.strip()
+            else "entreprise"
+        )
+
+        st.download_button(
+            "📄 Télécharger le rapport PDF CMA",
+            data=pdf_report_bytes,
+            file_name=(
+                f"pre_diagnostic_photovoltaique_"
+                f"{pdf_filename_company}.pdf"
+            ),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        st.info(
+            "Pour générer le rapport PDF, validez une adresse et "
+            "assurez-vous que les données PVGIS sont disponibles."
+        )
+
+    st.markdown(
+        """
+        Le rapport PDF présente les résultats avec des explications simples,
+        des graphiques et des recommandations adaptées à un échange avec
+        l'artisan. Il reste un pré-diagnostic et ne remplace pas une étude
+        technique ou économique complète.
+        """
+    )
 
     st.markdown(
         """
