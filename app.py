@@ -1,3 +1,4 @@
+
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -327,6 +328,24 @@ def detect_source_unit(df: pd.DataFrame) -> str:
     return units.mode().iloc[0]
 
 
+def parse_pas_hours(value, default_step: pd.Timedelta) -> float:
+    """Convertit PT30M, PT60M, PT1H... en durée exprimée en heures."""
+    if pd.isna(value):
+        return default_step.total_seconds() / 3600
+
+    text = str(value).strip().upper()
+
+    try:
+        if text.startswith("PT") and text.endswith("M"):
+            return float(text[2:-1]) / 60
+        if text.startswith("PT") and text.endswith("H"):
+            return float(text[2:-1])
+    except ValueError:
+        pass
+
+    return default_step.total_seconds() / 3600
+
+
 def enrich_energy_data(
     df: pd.DataFrame,
     time_step: pd.Timedelta,
@@ -334,32 +353,40 @@ def enrich_energy_data(
 ) -> tuple[pd.DataFrame, str]:
     result = df.copy()
 
-    duration_hours = time_step.total_seconds() / 3600
+    # Le fichier peut contenir plusieurs pas de temps (ex. PT60M puis PT30M).
+    # On calcule donc la durée ligne par ligne quand la colonne Pas est présente.
+    if "Pas" in result.columns:
+        result["Duree_h"] = result["Pas"].apply(
+            lambda value: parse_pas_hours(value, time_step)
+        )
+    else:
+        result["Duree_h"] = time_step.total_seconds() / 3600
+
     normalized_unit = str(source_unit).lower().replace(" ", "")
 
     if normalized_unit in {"wh", "w.h"}:
         result["Energie_kWh"] = result["Valeur"] / 1000
-        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        result["Puissance_kW"] = result["Energie_kWh"] / result["Duree_h"]
         message = "Les valeurs sont interprétées comme une énergie en Wh par intervalle."
 
     elif normalized_unit in {"kwh", "kw.h"}:
         result["Energie_kWh"] = result["Valeur"]
-        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        result["Puissance_kW"] = result["Energie_kWh"] / result["Duree_h"]
         message = "Les valeurs sont interprétées comme une énergie en kWh par intervalle."
 
     elif normalized_unit in {"w", "watt", "watts"}:
         result["Puissance_kW"] = result["Valeur"] / 1000
-        result["Energie_kWh"] = result["Puissance_kW"] * duration_hours
+        result["Energie_kWh"] = result["Puissance_kW"] * result["Duree_h"]
         message = "Les valeurs sont interprétées comme une puissance moyenne en W."
 
     elif normalized_unit in {"kw", "kilowatt", "kilowatts"}:
         result["Puissance_kW"] = result["Valeur"]
-        result["Energie_kWh"] = result["Puissance_kW"] * duration_hours
+        result["Energie_kWh"] = result["Puissance_kW"] * result["Duree_h"]
         message = "Les valeurs sont interprétées comme une puissance moyenne en kW."
 
     else:
         result["Energie_kWh"] = result["Valeur"] / 1000
-        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        result["Puissance_kW"] = result["Energie_kWh"] / result["Duree_h"]
         message = (
             f"Unité « {source_unit} » non reconnue : "
             "hypothèse Wh par intervalle."
@@ -394,13 +421,22 @@ def filter_period(
 
 def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
     hourly = df.copy()
-    hourly["Horodate_heure"] = hourly["Horodate"].dt.floor("h")
+
+    # Convention Enedis : l'horodatage correspond à la FIN de l'intervalle.
+    # Ainsi, pour un pas de 30 minutes :
+    #   08:30 + 09:00 = heure se terminant à 09:00.
+    # dt.ceil("h") conserve les heures rondes et rattache 08:30 à 09:00.
+    hourly["Horodate_heure"] = hourly["Horodate"].dt.ceil("h")
+    hourly["Puissance_ponderee"] = (
+        hourly["Puissance_kW"] * hourly["Duree_h"]
+    )
 
     hourly = (
         hourly.groupby("Horodate_heure", as_index=False)
         .agg(
             Energie_kWh=("Energie_kWh", "sum"),
-            Puissance_kW=("Puissance_kW", "mean"),
+            Puissance_ponderee=("Puissance_ponderee", "sum"),
+            Duree_totale_h=("Duree_h", "sum"),
             Nombre_points=("Valeur", "size"),
         )
         .rename(columns={"Horodate_heure": "Horodate"})
@@ -408,7 +444,18 @@ def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    return hourly
+    hourly["Puissance_kW"] = (
+        hourly["Puissance_ponderee"] / hourly["Duree_totale_h"]
+    )
+
+    return hourly[
+        [
+            "Horodate",
+            "Energie_kWh",
+            "Puissance_kW",
+            "Nombre_points",
+        ]
+    ]
 
 
 def build_daily_data(df: pd.DataFrame) -> pd.DataFrame:
