@@ -1,4 +1,3 @@
-
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -871,7 +870,14 @@ def build_daily_calendar(
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def geocode_company_address(address: str) -> list[dict]:
-    """Géocode une adresse avec le service officiel Géoplateforme / BAN."""
+    """
+    Géocode une adresse avec le service officiel de la Géoplateforme.
+
+    Paramètres attendus par l'API :
+    - q : texte recherché ;
+    - limit : nombre maximal de résultats ;
+    - index : type de données recherché, ici les adresses.
+    """
     address = address.strip()
 
     if len(address) < 5:
@@ -879,17 +885,33 @@ def geocode_company_address(address: str) -> list[dict]:
 
     url = "https://data.geopf.fr/geocodage/search"
     params = {
-        "text": address,
-        "maximumResponses": 5,
+        "q": address,
+        "limit": 5,
+        "index": "address",
+    }
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "CMA-Nouvelle-Aquitaine-SolarDiag/1.0",
     }
 
-    response = requests.get(url, params=params, timeout=20)
+    response = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=25,
+    )
+
+    if response.status_code == 400:
+        raise ValueError(
+            "La requête d'adresse a été refusée. Vérifiez que l'adresse "
+            "contient au minimum un numéro, une voie et une commune."
+        )
+
     response.raise_for_status()
     payload = response.json()
 
     candidates = []
 
-    # Format GeoJSON généralement renvoyé par le service search.
     for feature in payload.get("features", []):
         properties = feature.get("properties", {})
         geometry = feature.get("geometry", {})
@@ -903,11 +925,28 @@ def geocode_company_address(address: str) -> list[dict]:
 
         label = (
             properties.get("label")
-            or properties.get("fulltext")
             or properties.get("name")
+            or properties.get("display_name")
             or address
         )
 
+        postcode = (
+            properties.get("postcode")
+            or properties.get("postalcode")
+            or ""
+        )
+        city = (
+            properties.get("city")
+            or properties.get("municipality")
+            or properties.get("locality")
+            or ""
+        )
+        street = (
+            properties.get("street")
+            or properties.get("name")
+            or ""
+        )
+        housenumber = properties.get("housenumber") or ""
         score = properties.get("score")
 
         candidates.append(
@@ -916,25 +955,33 @@ def geocode_company_address(address: str) -> list[dict]:
                 "latitude": latitude,
                 "longitude": longitude,
                 "score": score,
+                "postcode": str(postcode),
+                "city": str(city),
+                "street": str(street),
+                "housenumber": str(housenumber),
+                "source": "Géoplateforme / BAN",
             }
         )
 
-    # Prise en charge d'un éventuel autre format de réponse.
+    # Compatibilité avec certains formats de réponse alternatifs.
     for result in payload.get("results", []):
-        longitude = result.get("x") or result.get("lon")
-        latitude = result.get("y") or result.get("lat")
-
-        if longitude is None or latitude is None:
-            lonlat = result.get("lonlat")
-            if isinstance(lonlat, str) and "," in lonlat:
-                longitude, latitude = lonlat.split(",", 1)
+        longitude = (
+            result.get("x")
+            or result.get("lon")
+            or result.get("longitude")
+        )
+        latitude = (
+            result.get("y")
+            or result.get("lat")
+            or result.get("latitude")
+        )
 
         if longitude is None or latitude is None:
             continue
 
         candidates.append(
             {
-                "label": (
+                "label": str(
                     result.get("fulltext")
                     or result.get("label")
                     or result.get("name")
@@ -943,10 +990,24 @@ def geocode_company_address(address: str) -> list[dict]:
                 "latitude": float(latitude),
                 "longitude": float(longitude),
                 "score": result.get("score"),
+                "postcode": str(
+                    result.get("postcode")
+                    or result.get("postalcode")
+                    or ""
+                ),
+                "city": str(
+                    result.get("city")
+                    or result.get("municipality")
+                    or ""
+                ),
+                "street": str(result.get("street") or ""),
+                "housenumber": str(
+                    result.get("housenumber") or ""
+                ),
+                "source": "Géoplateforme / BAN",
             }
         )
 
-    # Déduplication simple.
     unique = []
     seen = set()
 
@@ -963,7 +1024,7 @@ def geocode_company_address(address: str) -> list[dict]:
     if not unique:
         raise ValueError(
             "Aucune adresse précise n'a été trouvée. "
-            "Ajoutez le numéro, la rue, le code postal et la commune."
+            "Ajoutez le numéro, la voie, le code postal et la commune."
         )
 
     return unique[:5]
@@ -1462,11 +1523,34 @@ with st.sidebar:
         )
 
     st.markdown("---")
-    st.markdown("## 3. Localisation solaire")
+    st.markdown("## 3. Entreprise")
+
+    company_name = st.text_input(
+        "Nom de l'entreprise",
+        placeholder="Ex. Atelier Dupont",
+    )
+
+    company_siret = st.text_input(
+        "SIRET (optionnel)",
+        placeholder="Ex. 123 456 789 00012",
+    )
+
+    advisor_name = st.text_input(
+        "Conseiller CMA",
+        placeholder="Nom du conseiller",
+    )
+
+    diagnostic_date = st.date_input(
+        "Date du diagnostic",
+        value=pd.Timestamp.today().date(),
+    )
+
+    st.markdown("---")
+    st.markdown("## 4. Localisation solaire")
 
     company_address = st.text_input(
         "Adresse complète de l'entreprise",
-        placeholder="Ex. 46 avenue du Général de Larminat, 33000 Bordeaux",
+        placeholder="Ex. 3 rue du 11 Novembre, 33000 Bordeaux",
     )
 
     if st.button(
@@ -1503,11 +1587,51 @@ with st.sidebar:
         )
 
         st.success(
+            f"Adresse validée : {selected_location['label']}\n\n"
             f"Latitude : {selected_location['latitude']:.6f}\n\n"
             f"Longitude : {selected_location['longitude']:.6f}"
         )
 
-    st.markdown("### Paramètres photovoltaïques")
+    with st.expander("Coordonnées manuelles en cas de besoin"):
+        manual_coordinates = st.checkbox(
+            "Utiliser des coordonnées manuelles"
+        )
+
+        manual_latitude = st.number_input(
+            "Latitude",
+            min_value=-90.0,
+            max_value=90.0,
+            value=44.8378,
+            format="%.6f",
+            disabled=not manual_coordinates,
+        )
+
+        manual_longitude = st.number_input(
+            "Longitude",
+            min_value=-180.0,
+            max_value=180.0,
+            value=-0.5792,
+            format="%.6f",
+            disabled=not manual_coordinates,
+        )
+
+        if manual_coordinates:
+            selected_location = {
+                "label": (
+                    company_address.strip()
+                    or "Coordonnées saisies manuellement"
+                ),
+                "latitude": float(manual_latitude),
+                "longitude": float(manual_longitude),
+                "score": None,
+                "postcode": "",
+                "city": "",
+                "street": "",
+                "housenumber": "",
+                "source": "Saisie manuelle",
+            }
+
+    st.markdown("## 5. Paramètres photovoltaïques")
 
     pv_peak_kwp = st.number_input(
         "Puissance étudiée (kWc)",
@@ -1737,6 +1861,48 @@ atypical_days = points_per_day[
 
 
 # ============================================================
+# FICHE ENTREPRISE
+# ============================================================
+
+if company_name or company_siret or selected_location:
+    company_parts = []
+
+    if company_name:
+        company_parts.append(
+            f"<strong>Entreprise :</strong> {company_name}"
+        )
+
+    if company_siret:
+        company_parts.append(
+            f"<strong>SIRET :</strong> {company_siret}"
+        )
+
+    if selected_location:
+        company_parts.append(
+            f"<strong>Adresse :</strong> {selected_location['label']}"
+        )
+
+    if advisor_name:
+        company_parts.append(
+            f"<strong>Conseiller :</strong> {advisor_name}"
+        )
+
+    company_parts.append(
+        "<strong>Date du diagnostic :</strong> "
+        f"{diagnostic_date.strftime('%d/%m/%Y')}"
+    )
+
+    st.markdown(
+        '<div class="intro-card">'
+        '<div class="intro-icon">🏢</div>'
+        '<div>'
+        + "<br>".join(company_parts)
+        + "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
 # INFORMATIONS DE CONTRÔLE
 # ============================================================
 
@@ -1926,7 +2092,8 @@ with tab_solar:
         st.success(
             f"Adresse utilisée : **{selected_location['label']}**  \n"
             f"Coordonnées : **{selected_location['latitude']:.6f}, "
-            f"{selected_location['longitude']:.6f}**"
+            f"{selected_location['longitude']:.6f}**  \n"
+            f"Source : **{selected_location.get('source', 'Géocodage')}**"
         )
 
         if solar_error:
@@ -2500,6 +2667,10 @@ with tab_export:
     summary_df = pd.DataFrame(
         {
             "Indicateur": [
+                "Nom de l'entreprise",
+                "SIRET",
+                "Conseiller CMA",
+                "Date du diagnostic",
                 "Fichier source",
                 "Début de période",
                 "Fin de période",
@@ -2527,6 +2698,10 @@ with tab_export:
                 "Jours atypiques",
             ],
             "Valeur": [
+                company_name,
+                company_siret,
+                advisor_name,
+                diagnostic_date.strftime("%d/%m/%Y"),
                 uploaded_file.name,
                 filtered_df["Horodate"].min(),
                 filtered_df["Horodate"].max(),
