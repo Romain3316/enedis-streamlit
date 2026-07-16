@@ -1,12 +1,16 @@
+
 import base64
 from io import BytesIO
 from pathlib import Path
+
+import requests
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from pvlib.location import Location
 
 
 # ============================================================
@@ -864,6 +868,407 @@ def build_daily_calendar(
     return matrix.reindex(columns=range(7))
 
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_company_address(address: str) -> list[dict]:
+    """Géocode une adresse avec le service officiel Géoplateforme / BAN."""
+    address = address.strip()
+
+    if len(address) < 5:
+        raise ValueError("Veuillez saisir une adresse plus complète.")
+
+    url = "https://data.geopf.fr/geocodage/search"
+    params = {
+        "text": address,
+        "maximumResponses": 5,
+    }
+
+    response = requests.get(url, params=params, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+
+    candidates = []
+
+    # Format GeoJSON généralement renvoyé par le service search.
+    for feature in payload.get("features", []):
+        properties = feature.get("properties", {})
+        geometry = feature.get("geometry", {})
+        coordinates = geometry.get("coordinates", [])
+
+        if len(coordinates) < 2:
+            continue
+
+        longitude = float(coordinates[0])
+        latitude = float(coordinates[1])
+
+        label = (
+            properties.get("label")
+            or properties.get("fulltext")
+            or properties.get("name")
+            or address
+        )
+
+        score = properties.get("score")
+
+        candidates.append(
+            {
+                "label": str(label),
+                "latitude": latitude,
+                "longitude": longitude,
+                "score": score,
+            }
+        )
+
+    # Prise en charge d'un éventuel autre format de réponse.
+    for result in payload.get("results", []):
+        longitude = result.get("x") or result.get("lon")
+        latitude = result.get("y") or result.get("lat")
+
+        if longitude is None or latitude is None:
+            lonlat = result.get("lonlat")
+            if isinstance(lonlat, str) and "," in lonlat:
+                longitude, latitude = lonlat.split(",", 1)
+
+        if longitude is None or latitude is None:
+            continue
+
+        candidates.append(
+            {
+                "label": (
+                    result.get("fulltext")
+                    or result.get("label")
+                    or result.get("name")
+                    or address
+                ),
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+                "score": result.get("score"),
+            }
+        )
+
+    # Déduplication simple.
+    unique = []
+    seen = set()
+
+    for candidate in candidates:
+        key = (
+            round(candidate["latitude"], 6),
+            round(candidate["longitude"], 6),
+        )
+
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+
+    if not unique:
+        raise ValueError(
+            "Aucune adresse précise n'a été trouvée. "
+            "Ajoutez le numéro, la rue, le code postal et la commune."
+        )
+
+    return unique[:5]
+
+
+def localize_paris(times: pd.Series | pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Localise des horodatages Enedis naïfs dans le fuseau Europe/Paris."""
+    index = pd.DatetimeIndex(pd.to_datetime(times))
+
+    try:
+        return index.tz_localize(
+            "Europe/Paris",
+            ambiguous="infer",
+            nonexistent="shift_forward",
+        )
+    except Exception:
+        return index.tz_localize(
+            "Europe/Paris",
+            ambiguous=True,
+            nonexistent="shift_forward",
+        )
+
+
+def add_astronomical_solar_data(
+    df: pd.DataFrame,
+    latitude: float,
+    longitude: float,
+) -> pd.DataFrame:
+    """
+    Ajoute les heures astronomiques exactes de lever/coucher et la hauteur
+    solaire à chaque relevé Enedis.
+    """
+    result = df.copy()
+    location = Location(
+        latitude=latitude,
+        longitude=longitude,
+        tz="Europe/Paris",
+    )
+
+    local_times = localize_paris(result["Horodate"])
+    solar_position = location.get_solarposition(local_times)
+
+    result["Hauteur_soleil_deg"] = solar_position[
+        "apparent_elevation"
+    ].to_numpy()
+
+    unique_dates = pd.DatetimeIndex(
+        pd.to_datetime(result["Horodate"].dt.normalize().unique())
+    )
+    local_midnights = unique_dates.tz_localize(
+        "Europe/Paris",
+        ambiguous=True,
+        nonexistent="shift_forward",
+    )
+
+    sun_events = location.get_sun_rise_set_transit(
+        local_midnights,
+        method="spa",
+    )
+
+    sun_table = pd.DataFrame(
+        {
+            "Date_solaire": unique_dates,
+            "Lever_soleil": (
+                sun_events["sunrise"]
+                .dt.tz_convert("Europe/Paris")
+                .dt.tz_localize(None)
+                .to_numpy()
+            ),
+            "Coucher_soleil": (
+                sun_events["sunset"]
+                .dt.tz_convert("Europe/Paris")
+                .dt.tz_localize(None)
+                .to_numpy()
+            ),
+            "Midi_solaire": (
+                sun_events["transit"]
+                .dt.tz_convert("Europe/Paris")
+                .dt.tz_localize(None)
+                .to_numpy()
+            ),
+        }
+    )
+
+    result["Date_solaire"] = result["Horodate"].dt.normalize()
+    result = result.merge(
+        sun_table,
+        on="Date_solaire",
+        how="left",
+    )
+
+    result["Soleil_leve"] = (
+        (result["Horodate"] >= result["Lever_soleil"])
+        & (result["Horodate"] <= result["Coucher_soleil"])
+        & (result["Hauteur_soleil_deg"] > 0)
+    )
+
+    return result
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_pvgis_reference_profile(
+    latitude: float,
+    longitude: float,
+    tilt: float,
+    aspect: float,
+    peak_power_kwp: float,
+    losses_percent: float,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Récupère un profil horaire PVGIS récent (2020-2023), puis calcule un
+    profil de référence moyen par mois, jour et heure.
+
+    PVGIS exprime aspect ainsi :
+    0 = sud, -90 = est, 90 = ouest.
+    """
+    url = "https://re.jrc.ec.europa.eu/api/v5_3/seriescalc"
+
+    params = {
+        "lat": latitude,
+        "lon": longitude,
+        "startyear": 2020,
+        "endyear": 2023,
+        "pvcalculation": 1,
+        "peakpower": peak_power_kwp,
+        "loss": losses_percent,
+        "pvtechchoice": "crystSi",
+        "mountingplace": "free",
+        "angle": tilt,
+        "aspect": aspect,
+        "components": 1,
+        "usehorizon": 1,
+        "outputformat": "json",
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=120,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    hourly_rows = payload.get("outputs", {}).get("hourly", [])
+
+    if not hourly_rows:
+        raise ValueError("PVGIS n'a renvoyé aucune donnée horaire.")
+
+    pvgis = pd.DataFrame(hourly_rows)
+
+    pvgis["Datetime_UTC"] = pd.to_datetime(
+        pvgis["time"],
+        format="%Y%m%d:%H%M",
+        utc=True,
+        errors="coerce",
+    )
+    pvgis = pvgis.dropna(subset=["Datetime_UTC"]).copy()
+
+    pvgis["Datetime_local"] = (
+        pvgis["Datetime_UTC"]
+        .dt.tz_convert("Europe/Paris")
+        .dt.tz_localize(None)
+    )
+
+    if "G(i)" in pvgis.columns:
+        pvgis["Irradiation_Wm2"] = pd.to_numeric(
+            pvgis["G(i)"],
+            errors="coerce",
+        )
+    else:
+        component_columns = [
+            column
+            for column in ["Gb(i)", "Gd(i)", "Gr(i)"]
+            if column in pvgis.columns
+        ]
+
+        if component_columns:
+            pvgis["Irradiation_Wm2"] = (
+                pvgis[component_columns]
+                .apply(pd.to_numeric, errors="coerce")
+                .sum(axis=1)
+            )
+        else:
+            pvgis["Irradiation_Wm2"] = np.nan
+
+    pvgis["Production_PV_kW"] = (
+        pd.to_numeric(pvgis.get("P"), errors="coerce") / 1000
+    )
+
+    pvgis["Mois"] = pvgis["Datetime_local"].dt.month
+    pvgis["Jour_mois"] = pvgis["Datetime_local"].dt.day
+    pvgis["Heure"] = pvgis["Datetime_local"].dt.hour
+
+    exact_profile = (
+        pvgis.groupby(
+            ["Mois", "Jour_mois", "Heure"],
+            as_index=False,
+        )
+        .agg(
+            Irradiation_Wm2=("Irradiation_Wm2", "mean"),
+            Production_PV_kW=("Production_PV_kW", "mean"),
+        )
+    )
+
+    metadata = payload.get("inputs", {})
+    metadata["source_period"] = "2020-2023"
+
+    return exact_profile, metadata
+
+
+def merge_pvgis_profile(
+    df: pd.DataFrame,
+    pvgis_profile: pd.DataFrame,
+) -> pd.DataFrame:
+    result = df.copy()
+    result["Mois_solaire"] = result["Horodate"].dt.month
+    result["Jour_mois_solaire"] = result["Horodate"].dt.day
+    result["Heure_solaire"] = result["Horodate"].dt.hour
+
+    exact = pvgis_profile.rename(
+        columns={
+            "Mois": "Mois_solaire",
+            "Jour_mois": "Jour_mois_solaire",
+            "Heure": "Heure_solaire",
+        }
+    )
+
+    result = result.merge(
+        exact,
+        on=[
+            "Mois_solaire",
+            "Jour_mois_solaire",
+            "Heure_solaire",
+        ],
+        how="left",
+    )
+
+    # Repli pour le 29 février ou les rares trous : moyenne mois/heure.
+    fallback = (
+        pvgis_profile.groupby(
+            ["Mois", "Heure"],
+            as_index=False,
+        )
+        .agg(
+            Irradiation_fallback=("Irradiation_Wm2", "mean"),
+            Production_fallback=("Production_PV_kW", "mean"),
+        )
+        .rename(
+            columns={
+                "Mois": "Mois_solaire",
+                "Heure": "Heure_solaire",
+            }
+        )
+    )
+
+    result = result.merge(
+        fallback,
+        on=["Mois_solaire", "Heure_solaire"],
+        how="left",
+    )
+
+    result["Irradiation_Wm2"] = result[
+        "Irradiation_Wm2"
+    ].fillna(result["Irradiation_fallback"])
+
+    result["Production_PV_kW"] = result[
+        "Production_PV_kW"
+    ].fillna(result["Production_fallback"])
+
+    result["Production_PV_kWh"] = (
+        result["Production_PV_kW"] * result["Duree_h"]
+    )
+
+    result["Autoconsommation_estimee_kWh"] = np.minimum(
+        result["Energie_kWh"],
+        result["Production_PV_kWh"].fillna(0),
+    )
+
+    return result
+
+
+def build_daily_solar_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if "Lever_soleil" not in df.columns:
+        return pd.DataFrame()
+
+    daily = (
+        df.groupby(df["Horodate"].dt.normalize(), as_index=False)
+        .agg(
+            Lever_soleil=("Lever_soleil", "first"),
+            Coucher_soleil=("Coucher_soleil", "first"),
+            Midi_solaire=("Midi_solaire", "first"),
+            Irradiation_moyenne_Wm2=("Irradiation_Wm2", "mean"),
+            Irradiation_max_Wm2=("Irradiation_Wm2", "max"),
+            Production_PV_kWh=("Production_PV_kWh", "sum"),
+        )
+        .rename(columns={"Horodate": "Date"})
+    )
+
+    daily["Duree_jour_h"] = (
+        daily["Coucher_soleil"] - daily["Lever_soleil"]
+    ).dt.total_seconds() / 3600
+
+    return daily
+
+
 def format_fr(value: float, decimals: int = 1) -> str:
     return (
         f"{value:,.{decimals}f}"
@@ -1057,27 +1462,111 @@ with st.sidebar:
         )
 
     st.markdown("---")
-    st.markdown("## 3. Plage solaire")
+    st.markdown("## 3. Localisation solaire")
 
-    solar_start = st.slider(
-        "Début",
-        min_value=0,
-        max_value=23,
-        value=8,
-        format="%dh",
+    company_address = st.text_input(
+        "Adresse complète de l'entreprise",
+        placeholder="Ex. 46 avenue du Général de Larminat, 33000 Bordeaux",
     )
 
-    solar_end = st.slider(
-        "Fin",
-        min_value=1,
-        max_value=24,
-        value=18,
-        format="%dh",
+    if st.button(
+        "📍 Rechercher l'adresse",
+        use_container_width=True,
+    ):
+        try:
+            st.session_state["address_candidates"] = (
+                geocode_company_address(company_address)
+            )
+        except Exception as exc:
+            st.session_state["address_candidates"] = []
+            st.error(f"Géocodage impossible : {exc}")
+
+    address_candidates = st.session_state.get(
+        "address_candidates",
+        [],
+    )
+
+    selected_location = None
+
+    if address_candidates:
+        labels = [item["label"] for item in address_candidates]
+
+        selected_label = st.selectbox(
+            "Adresse reconnue",
+            labels,
+        )
+
+        selected_location = next(
+            item
+            for item in address_candidates
+            if item["label"] == selected_label
+        )
+
+        st.success(
+            f"Latitude : {selected_location['latitude']:.6f}\n\n"
+            f"Longitude : {selected_location['longitude']:.6f}"
+        )
+
+    st.markdown("### Paramètres photovoltaïques")
+
+    pv_peak_kwp = st.number_input(
+        "Puissance étudiée (kWc)",
+        min_value=0.1,
+        max_value=1000.0,
+        value=10.0,
+        step=0.5,
+    )
+
+    pv_tilt = st.slider(
+        "Inclinaison des panneaux",
+        min_value=0,
+        max_value=90,
+        value=30,
+        format="%d°",
+    )
+
+    orientation_label = st.selectbox(
+        "Orientation",
+        [
+            "Sud",
+            "Sud-Est",
+            "Est",
+            "Sud-Ouest",
+            "Ouest",
+        ],
+    )
+
+    orientation_to_pvgis = {
+        "Sud": 0,
+        "Sud-Est": -45,
+        "Est": -90,
+        "Sud-Ouest": 45,
+        "Ouest": 90,
+    }
+
+    pv_aspect = orientation_to_pvgis[orientation_label]
+
+    pv_losses = st.slider(
+        "Pertes système",
+        min_value=0,
+        max_value=35,
+        value=14,
+        format="%d%%",
+    )
+
+    irradiation_threshold = st.slider(
+        "Seuil d'irradiation significative",
+        min_value=0,
+        max_value=500,
+        value=50,
+        step=10,
+        format="%d W/m²",
     )
 
     st.caption(
-        "Cette plage sert uniquement à mesurer la part de consommation "
-        "située pendant des heures potentiellement favorables au solaire."
+        "Le lever et le coucher sont calculés pour chaque date à partir "
+        "des coordonnées exactes. L'irradiation et la production sont "
+        "estimées à partir de PVGIS."
     )
 
 
@@ -1109,21 +1598,106 @@ median_daily_kwh = daily_df["Consommation_kWh"].median()
 maximum_power_kw = filtered_df["Puissance_kW"].max()
 mean_power_kw = filtered_df["Puissance_kW"].mean()
 
-solar_mask = (
-    (filtered_df["Horodate"].dt.hour >= solar_start)
-    & (filtered_df["Horodate"].dt.hour < solar_end)
-)
+solar_analysis_available = selected_location is not None
+pvgis_available = False
+solar_error = None
+solar_daily_df = pd.DataFrame()
 
-solar_kwh = filtered_df.loc[
-    solar_mask,
-    "Energie_kWh",
-].sum()
+daylight_kwh = np.nan
+daylight_share = np.nan
+irradiated_kwh = np.nan
+irradiated_share = np.nan
+pvgis_production_kwh = np.nan
+self_consumed_kwh = np.nan
+self_consumption_rate = np.nan
+self_sufficiency_rate = np.nan
 
-solar_share = (
-    solar_kwh / total_kwh * 100
-    if total_kwh
-    else 0
-)
+if solar_analysis_available:
+    try:
+        filtered_df = add_astronomical_solar_data(
+            filtered_df,
+            latitude=selected_location["latitude"],
+            longitude=selected_location["longitude"],
+        )
+
+        daylight_kwh = filtered_df.loc[
+            filtered_df["Soleil_leve"],
+            "Energie_kWh",
+        ].sum()
+
+        daylight_share = (
+            daylight_kwh / total_kwh * 100
+            if total_kwh
+            else 0
+        )
+
+        try:
+            pvgis_profile, pvgis_metadata = (
+                fetch_pvgis_reference_profile(
+                    latitude=selected_location["latitude"],
+                    longitude=selected_location["longitude"],
+                    tilt=pv_tilt,
+                    aspect=pv_aspect,
+                    peak_power_kwp=pv_peak_kwp,
+                    losses_percent=pv_losses,
+                )
+            )
+
+            filtered_df = merge_pvgis_profile(
+                filtered_df,
+                pvgis_profile,
+            )
+            pvgis_available = True
+
+            irradiated_mask = (
+                filtered_df["Irradiation_Wm2"]
+                >= irradiation_threshold
+            )
+
+            irradiated_kwh = filtered_df.loc[
+                irradiated_mask,
+                "Energie_kWh",
+            ].sum()
+
+            irradiated_share = (
+                irradiated_kwh / total_kwh * 100
+                if total_kwh
+                else 0
+            )
+
+            pvgis_production_kwh = filtered_df[
+                "Production_PV_kWh"
+            ].sum()
+
+            self_consumed_kwh = filtered_df[
+                "Autoconsommation_estimee_kWh"
+            ].sum()
+
+            self_consumption_rate = (
+                self_consumed_kwh / pvgis_production_kwh * 100
+                if pvgis_production_kwh
+                else 0
+            )
+
+            self_sufficiency_rate = (
+                self_consumed_kwh / total_kwh * 100
+                if total_kwh
+                else 0
+            )
+
+            solar_daily_df = build_daily_solar_summary(
+                filtered_df
+            )
+
+        except Exception as exc:
+            solar_error = (
+                "Les heures de lever/coucher ont été calculées, "
+                f"mais PVGIS n'a pas pu être interrogé : {exc}"
+            )
+
+    except Exception as exc:
+        solar_analysis_available = False
+        solar_error = f"Analyse solaire impossible : {exc}"
 
 load_factor = (
     mean_power_kw / maximum_power_kw * 100
@@ -1192,6 +1766,7 @@ st.caption(interpretation)
 
 (
     tab_dashboard,
+    tab_solar,
     tab_profiles,
     tab_daily,
     tab_quality,
@@ -1199,6 +1774,7 @@ st.caption(interpretation)
 ) = st.tabs(
     [
         "📊 Tableau de bord",
+        "☀️ Analyse solaire",
         "🕒 Profils horaires",
         "📅 Consommations journalières",
         "✅ Qualité des données",
@@ -1230,8 +1806,12 @@ with tab_dashboard:
     )
 
     metric4.metric(
-        f"Part {solar_start}h–{solar_end}h",
-        f"{format_fr(solar_share, 1)} %",
+        "Part pendant le jour",
+        (
+            f"{format_fr(daylight_share, 1)} %"
+            if solar_analysis_available
+            else "Adresse requise"
+        ),
     )
 
     metric5.metric(
@@ -1270,12 +1850,20 @@ with tab_dashboard:
             data=[
                 go.Pie(
                     labels=[
-                        f"Entre {solar_start}h et {solar_end}h",
-                        "Hors plage solaire",
+                        "Pendant le jour astronomique",
+                        "Nuit",
                     ],
                     values=[
-                        solar_kwh,
-                        max(total_kwh - solar_kwh, 0),
+                        (
+                            daylight_kwh
+                            if solar_analysis_available
+                            else 0
+                        ),
+                        (
+                            max(total_kwh - daylight_kwh, 0)
+                            if solar_analysis_available
+                            else total_kwh
+                        ),
                     ],
                     hole=0.62,
                     marker=dict(
@@ -1318,6 +1906,254 @@ with tab_dashboard:
         fig_global,
         use_container_width=True,
     )
+
+
+
+# ============================================================
+# ANALYSE SOLAIRE GÉOLOCALISÉE
+# ============================================================
+
+with tab_solar:
+    st.subheader("Analyse solaire géolocalisée")
+
+    if not solar_analysis_available:
+        st.info(
+            "Saisissez puis validez l'adresse précise de l'entreprise "
+            "dans le panneau latéral pour calculer les heures de lever "
+            "et de coucher du soleil."
+        )
+    else:
+        st.success(
+            f"Adresse utilisée : **{selected_location['label']}**  \n"
+            f"Coordonnées : **{selected_location['latitude']:.6f}, "
+            f"{selected_location['longitude']:.6f}**"
+        )
+
+        if solar_error:
+            st.warning(solar_error)
+
+        first_date_row = (
+            filtered_df.sort_values("Horodate")
+            .dropna(subset=["Lever_soleil", "Coucher_soleil"])
+            .iloc[0]
+        )
+        last_date_row = (
+            filtered_df.sort_values("Horodate")
+            .dropna(subset=["Lever_soleil", "Coucher_soleil"])
+            .iloc[-1]
+        )
+
+        s1, s2, s3, s4 = st.columns(4)
+
+        s1.metric(
+            "Lever au début de période",
+            first_date_row["Lever_soleil"].strftime("%H:%M"),
+        )
+        s2.metric(
+            "Coucher au début de période",
+            first_date_row["Coucher_soleil"].strftime("%H:%M"),
+        )
+        s3.metric(
+            "Lever en fin de période",
+            last_date_row["Lever_soleil"].strftime("%H:%M"),
+        )
+        s4.metric(
+            "Coucher en fin de période",
+            last_date_row["Coucher_soleil"].strftime("%H:%M"),
+        )
+
+        k1, k2, k3, k4 = st.columns(4)
+
+        k1.metric(
+            "Consommation pendant le jour",
+            f"{format_fr(daylight_kwh, 0)} kWh",
+            f"{format_fr(daylight_share, 1)} %",
+        )
+
+        k2.metric(
+            f"Conso. avec ≥ {irradiation_threshold} W/m²",
+            (
+                f"{format_fr(irradiated_kwh, 0)} kWh"
+                if pvgis_available
+                else "PVGIS indisponible"
+            ),
+            (
+                f"{format_fr(irradiated_share, 1)} %"
+                if pvgis_available
+                else None
+            ),
+        )
+
+        k3.metric(
+            f"Production estimée {pv_peak_kwp:g} kWc",
+            (
+                f"{format_fr(pvgis_production_kwh, 0)} kWh"
+                if pvgis_available
+                else "PVGIS indisponible"
+            ),
+        )
+
+        k4.metric(
+            "Taux d'autoproduction estimé",
+            (
+                f"{format_fr(self_sufficiency_rate, 1)} %"
+                if pvgis_available
+                else "PVGIS indisponible"
+            ),
+        )
+
+        if pvgis_available:
+            a1, a2 = st.columns(2)
+
+            with a1:
+                st.metric(
+                    "Énergie PV autoconsommée estimée",
+                    f"{format_fr(self_consumed_kwh, 0)} kWh",
+                )
+
+            with a2:
+                st.metric(
+                    "Taux d'autoconsommation estimé",
+                    f"{format_fr(self_consumption_rate, 1)} %",
+                )
+
+            solar_plot = filtered_df[
+                [
+                    "Horodate",
+                    "Puissance_kW",
+                    "Production_PV_kW",
+                    "Irradiation_Wm2",
+                ]
+            ].copy()
+
+            fig_power_compare = go.Figure()
+
+            fig_power_compare.add_trace(
+                go.Scatter(
+                    x=solar_plot["Horodate"],
+                    y=solar_plot["Puissance_kW"],
+                    name="Consommation",
+                    mode="lines",
+                    line=dict(color=CMA_BLUE, width=1.5),
+                )
+            )
+
+            fig_power_compare.add_trace(
+                go.Scatter(
+                    x=solar_plot["Horodate"],
+                    y=solar_plot["Production_PV_kW"],
+                    name="Production PV estimée",
+                    mode="lines",
+                    line=dict(color=CMA_RED, width=1.5),
+                )
+            )
+
+            fig_power_compare.update_layout(
+                title=(
+                    "Consommation et production photovoltaïque "
+                    "de référence"
+                ),
+                xaxis_title="Date et heure",
+                yaxis_title="Puissance (kW)",
+                template="plotly_white",
+                hovermode="x unified",
+            )
+
+            st.plotly_chart(
+                fig_power_compare,
+                use_container_width=True,
+            )
+
+            fig_irradiation = px.line(
+                solar_plot,
+                x="Horodate",
+                y="Irradiation_Wm2",
+                title="Irradiation solaire de référence PVGIS",
+                labels={
+                    "Horodate": "Date et heure",
+                    "Irradiation_Wm2": "Irradiation (W/m²)",
+                },
+                color_discrete_sequence=[CMA_RED],
+            )
+
+            fig_irradiation.add_hline(
+                y=irradiation_threshold,
+                line_dash="dash",
+                annotation_text=(
+                    f"Seuil {irradiation_threshold} W/m²"
+                ),
+            )
+
+            fig_irradiation.update_layout(
+                template="plotly_white",
+                hovermode="x unified",
+            )
+
+            st.plotly_chart(
+                fig_irradiation,
+                use_container_width=True,
+            )
+
+        st.subheader("Lever et coucher du soleil par jour")
+
+        sunrise_table = (
+            filtered_df[
+                [
+                    "Date_solaire",
+                    "Lever_soleil",
+                    "Midi_solaire",
+                    "Coucher_soleil",
+                ]
+            ]
+            .drop_duplicates()
+            .sort_values("Date_solaire")
+            .copy()
+        )
+
+        sunrise_table["Date"] = (
+            sunrise_table["Date_solaire"]
+            .dt.strftime("%d/%m/%Y")
+        )
+        sunrise_table["Lever"] = (
+            sunrise_table["Lever_soleil"]
+            .dt.strftime("%H:%M")
+        )
+        sunrise_table["Midi solaire"] = (
+            sunrise_table["Midi_solaire"]
+            .dt.strftime("%H:%M")
+        )
+        sunrise_table["Coucher"] = (
+            sunrise_table["Coucher_soleil"]
+            .dt.strftime("%H:%M")
+        )
+        sunrise_table["Durée du jour"] = (
+            sunrise_table["Coucher_soleil"]
+            - sunrise_table["Lever_soleil"]
+        ).dt.total_seconds() / 3600
+
+        st.dataframe(
+            sunrise_table[
+                [
+                    "Date",
+                    "Lever",
+                    "Midi solaire",
+                    "Coucher",
+                    "Durée du jour",
+                ]
+            ].style.format(
+                {"Durée du jour": "{:.2f} h"}
+            ),
+            use_container_width=True,
+            height=440,
+        )
+
+        st.caption(
+            "Les heures de lever et de coucher sont des calculs "
+            "astronomiques précis pour les coordonnées retenues. "
+            "Les valeurs PVGIS correspondent à un profil de référence "
+            "moyen calculé sur 2020-2023 ; elles ne constituent pas une "
+            "mesure météorologique réelle de chaque journée analysée."
+        )
 
 
 # ============================================================
@@ -1674,7 +2510,18 @@ with tab_export:
                 "Moyenne journalière (kWh)",
                 "Médiane journalière (kWh)",
                 "Pic de puissance (kW)",
-                f"Part entre {solar_start}h et {solar_end}h (%)",
+                "Adresse de l'entreprise",
+                "Latitude",
+                "Longitude",
+                "Part de consommation pendant le jour (%)",
+                (
+                    f"Part avec irradiation ≥ "
+                    f"{irradiation_threshold} W/m² (%)"
+                ),
+                "Puissance photovoltaïque étudiée (kWc)",
+                "Production PVGIS estimée (kWh)",
+                "Taux d'autoconsommation estimé (%)",
+                "Taux d'autoproduction estimé (%)",
                 "Facteur de charge (%)",
                 "Horodatages en doublon",
                 "Jours atypiques",
@@ -1690,7 +2537,47 @@ with tab_export:
                 average_daily_kwh,
                 median_daily_kwh,
                 maximum_power_kw,
-                solar_share,
+                (
+                    selected_location["label"]
+                    if selected_location
+                    else ""
+                ),
+                (
+                    selected_location["latitude"]
+                    if selected_location
+                    else ""
+                ),
+                (
+                    selected_location["longitude"]
+                    if selected_location
+                    else ""
+                ),
+                (
+                    daylight_share
+                    if solar_analysis_available
+                    else ""
+                ),
+                (
+                    irradiated_share
+                    if pvgis_available
+                    else ""
+                ),
+                pv_peak_kwp,
+                (
+                    pvgis_production_kwh
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    self_consumption_rate
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    self_sufficiency_rate
+                    if pvgis_available
+                    else ""
+                ),
                 load_factor,
                 duplicate_count,
                 len(atypical_days),
@@ -1703,6 +2590,63 @@ with tab_export:
     # - moyenne pour une unité de puissance (W / kW) ;
     # - somme pour une unité d'énergie (Wh / kWh).
     hourly_standardized_export = hourly_df.copy()
+
+    if solar_analysis_available:
+        solar_hourly_columns = [
+            "Horodate",
+            "Lever_soleil",
+            "Coucher_soleil",
+            "Hauteur_soleil_deg",
+        ]
+
+        if pvgis_available:
+            solar_hourly_columns += [
+                "Irradiation_Wm2",
+                "Production_PV_kW",
+                "Production_PV_kWh",
+                "Autoconsommation_estimee_kWh",
+            ]
+
+        solar_hourly_export = filtered_df.copy()
+        solar_hourly_export["Horodate_heure"] = (
+            solar_hourly_export["Horodate"].dt.ceil("h")
+        )
+
+        aggregations = {
+            "Lever_soleil": "first",
+            "Coucher_soleil": "first",
+            "Hauteur_soleil_deg": "mean",
+        }
+
+        if pvgis_available:
+            aggregations.update(
+                {
+                    "Irradiation_Wm2": "mean",
+                    "Production_PV_kW": "mean",
+                    "Production_PV_kWh": "sum",
+                    "Autoconsommation_estimee_kWh": "sum",
+                }
+            )
+
+        solar_hourly_export = (
+            solar_hourly_export.groupby(
+                "Horodate_heure",
+                as_index=False,
+            )
+            .agg(aggregations)
+            .rename(
+                columns={"Horodate_heure": "Horodate"}
+            )
+        )
+
+        hourly_standardized_export = (
+            hourly_standardized_export.merge(
+                solar_hourly_export,
+                on="Horodate",
+                how="left",
+            )
+        )
+
     normalized_unit = str(source_unit).lower().replace(" ", "")
 
     if normalized_unit in {"w", "watt", "watts"}:
@@ -1732,8 +2676,31 @@ with tab_export:
         hourly_standardized_export["Horodate"]
         .dt.strftime("%d/%m/%Y %H:%M:%S")
     )
+    export_columns = [
+        "Unité",
+        "Horodate",
+        "Valeur",
+        "Pas",
+    ]
+
+    optional_solar_columns = [
+        "Lever_soleil",
+        "Coucher_soleil",
+        "Hauteur_soleil_deg",
+        "Irradiation_Wm2",
+        "Production_PV_kW",
+        "Production_PV_kWh",
+        "Autoconsommation_estimee_kWh",
+    ]
+
+    export_columns += [
+        column
+        for column in optional_solar_columns
+        if column in hourly_standardized_export.columns
+    ]
+
     hourly_standardized_export = hourly_standardized_export[
-        ["Unité", "Horodate", "Valeur", "Pas"]
+        export_columns
     ]
 
     hourly_export = hourly_df.copy()
