@@ -8,240 +8,1448 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="CMA | Pré-diagnostic photovoltaïque", page_icon="☀️", layout="wide")
 
-CMA_BLUE = "#172C4C"
+# ============================================================
+# CONFIGURATION GÉNÉRALE
+# ============================================================
+
+st.set_page_config(
+    page_title="CMA - Pré-diagnostic photovoltaïque",
+    page_icon="☀️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+CMA_BLUE = "#17365D"
 CMA_RED = "#E53935"
-CMA_LIGHT = "#F4F6F8"
-WEEKDAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-WEEKDAY_MAP = dict(enumerate(WEEKDAYS))
-MONTHS = {1:"Janvier",2:"Février",3:"Mars",4:"Avril",5:"Mai",6:"Juin",7:"Juillet",8:"Août",9:"Septembre",10:"Octobre",11:"Novembre",12:"Décembre"}
+CMA_GREY = "#F3F5F7"
+CMA_TEXT = "#202735"
 
-st.markdown(f"""
-<style>
-.block-container {{max-width:1500px;padding-top:1.2rem;padding-bottom:3rem}}
-[data-testid="stSidebar"] {{background:{CMA_LIGHT};border-right:1px solid #dde3ea}}
-.hero {{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:28px 32px;margin-bottom:20px;background:linear-gradient(110deg,{CMA_BLUE} 0%,{CMA_BLUE} 72%,{CMA_RED} 72%,{CMA_RED} 100%);border-radius:18px;color:white;box-shadow:0 10px 30px rgba(23,44,76,.14)}}
-.hero h1 {{margin:0;font-size:2rem;font-weight:800}}
-.hero p {{margin:8px 0 0;opacity:.92}}
-.logo {{min-width:190px;text-align:center;background:white;color:{CMA_BLUE};border-radius:12px;padding:12px 18px;font-weight:800;font-size:1.15rem}}
-.card {{background:white;border:1px solid #e5e9ef;border-radius:16px;padding:20px;box-shadow:0 5px 18px rgba(23,44,76,.06);margin-bottom:18px}}
-div[data-testid="stMetric"] {{background:white;border:1px solid #e5e9ef;padding:15px 17px;border-radius:14px;box-shadow:0 4px 14px rgba(23,44,76,.05)}}
-.stDownloadButton>button,.stButton>button {{background:{CMA_BLUE};color:white;border:0;border-radius:10px;font-weight:700}}
-h2,h3 {{color:{CMA_BLUE}}}
-</style>
-""", unsafe_allow_html=True)
+WEEKDAYS = {
+    0: "Lundi",
+    1: "Mardi",
+    2: "Mercredi",
+    3: "Jeudi",
+    4: "Vendredi",
+    5: "Samedi",
+    6: "Dimanche",
+}
+WEEKDAY_ORDER = list(WEEKDAYS.values())
+
+MONTHS = {
+    1: "Janvier",
+    2: "Février",
+    3: "Mars",
+    4: "Avril",
+    5: "Mai",
+    6: "Juin",
+    7: "Juillet",
+    8: "Août",
+    9: "Septembre",
+    10: "Octobre",
+    11: "Novembre",
+    12: "Décembre",
+}
 
 
-def img64(path: Path):
+# ============================================================
+# STYLE CMA
+# ============================================================
+
+st.markdown(
+    f"""
+    <style>
+        .stApp {{
+            background-color: #FFFFFF;
+            color: {CMA_TEXT};
+        }}
+
+        .block-container {{
+            max-width: 1500px;
+            padding-top: 1.2rem;
+            padding-bottom: 3rem;
+        }}
+
+        [data-testid="stSidebar"] {{
+            background-color: {CMA_GREY};
+            border-right: 1px solid #DDE3E9;
+        }}
+
+        .cma-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            background: linear-gradient(
+                115deg,
+                {CMA_BLUE} 0%,
+                {CMA_BLUE} 75%,
+                {CMA_RED} 75%,
+                {CMA_RED} 100%
+            );
+            color: white;
+            padding: 26px 30px;
+            border-radius: 18px;
+            margin-bottom: 18px;
+            box-shadow: 0 10px 28px rgba(23, 54, 93, 0.16);
+        }}
+
+        .cma-header h1 {{
+            margin: 0;
+            font-size: 2rem;
+            font-weight: 800;
+            line-height: 1.1;
+        }}
+
+        .cma-header p {{
+            margin: 8px 0 0;
+            font-size: 1rem;
+            opacity: 0.92;
+        }}
+
+        .cma-logo {{
+            min-width: 190px;
+            background: white;
+            color: {CMA_BLUE};
+            border-radius: 12px;
+            padding: 12px 16px;
+            text-align: center;
+            font-weight: 800;
+        }}
+
+        .intro-card {{
+            border: 1px solid #E3E8EE;
+            border-radius: 14px;
+            padding: 18px 20px;
+            margin-bottom: 18px;
+            box-shadow: 0 5px 16px rgba(23, 54, 93, 0.06);
+            background: white;
+        }}
+
+        div[data-testid="stMetric"] {{
+            background: white;
+            border: 1px solid #E3E8EE;
+            border-radius: 14px;
+            padding: 16px;
+            box-shadow: 0 5px 16px rgba(23, 54, 93, 0.05);
+        }}
+
+        .stButton > button {{
+            background: {CMA_RED};
+            color: white;
+            border: 0;
+            border-radius: 10px;
+            font-weight: 700;
+        }}
+
+        .stButton > button:hover {{
+            background: #C82E2A;
+            color: white;
+        }}
+
+        .stDownloadButton > button {{
+            background: {CMA_BLUE};
+            color: white;
+            border: 0;
+            border-radius: 10px;
+            font-weight: 700;
+        }}
+
+        .stDownloadButton > button:hover {{
+            background: #102947;
+            color: white;
+        }}
+
+        h2, h3 {{
+            color: {CMA_BLUE};
+        }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# FONCTIONS
+# ============================================================
+
+def file_to_base64(path: Path) -> str | None:
     if not path.exists():
         return None
-    data = base64.b64encode(path.read_bytes()).decode()
-    ext = path.suffix.lower().replace(".", "")
-    return f"data:image/{'jpeg' if ext in ('jpg','jpeg') else ext};base64,{data}"
+
+    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+    extension = path.suffix.lower().replace(".", "")
+    mime = "jpeg" if extension in {"jpg", "jpeg"} else extension
+    return f"data:image/{mime};base64,{encoded}"
 
 
-def header():
-    candidates = [Path("logo_cma.png"), Path("logo_cma.jpg"), Path("assets/logo_cma.png")]
-    uri = next((img64(p) for p in candidates if p.exists()), None)
-    logo = f'<div class="logo"><img src="{uri}" style="max-height:74px;max-width:210px"></div>' if uri else '<div class="logo">CMA<br><span style="font-size:.72rem">NOUVELLE-AQUITAINE</span></div>'
-    st.markdown(f'<div class="hero"><div><h1>Pré-diagnostic photovoltaïque</h1><p>Analyse automatisée des courbes de charge Enedis</p></div>{logo}</div>', unsafe_allow_html=True)
+def render_header() -> None:
+    logo_paths = [
+        Path("logo_cma.png"),
+        Path("logo_cma.jpg"),
+        Path("assets/logo_cma.png"),
+        Path("assets/logo_cma.jpg"),
+    ]
+
+    logo_uri = None
+    for logo_path in logo_paths:
+        logo_uri = file_to_base64(logo_path)
+        if logo_uri:
+            break
+
+    if logo_uri:
+        logo_html = (
+            f'<div class="cma-logo">'
+            f'<img src="{logo_uri}" style="max-height:72px;max-width:210px;">'
+            f"</div>"
+        )
+    else:
+        logo_html = (
+            '<div class="cma-logo">'
+            'CMA<br><span style="font-size:.72rem;font-weight:600;">'
+            "NOUVELLE-AQUITAINE</span></div>"
+        )
+
+    st.markdown(
+        f"""
+        <div class="cma-header">
+            <div>
+                <h1>Pré-diagnostic photovoltaïque</h1>
+                <p>Analyse automatisée des courbes de charge Enedis</p>
+            </div>
+            {logo_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_data(show_spinner=False)
-def read_file(content: bytes, name: str):
-    b = BytesIO(content)
-    if name.lower().endswith(".csv"):
+def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    buffer = BytesIO(file_bytes)
+
+    if filename.lower().endswith(".csv"):
+        attempts = [
+            {"sep": ";", "encoding": "utf-8"},
+            {"sep": ";", "encoding": "latin-1"},
+            {"sep": ",", "encoding": "utf-8"},
+            {"sep": ",", "encoding": "latin-1"},
+        ]
+
         df = None
-        for sep in [";", ","]:
-            for enc in ["utf-8", "latin-1"]:
-                try:
-                    b.seek(0)
-                    candidate = pd.read_csv(b, sep=sep, encoding=enc)
-                    if {"Horodate", "Valeur"}.issubset(candidate.columns):
-                        df = candidate
-                        break
-                except Exception:
-                    pass
-            if df is not None:
-                break
+        last_error = None
+
+        for params in attempts:
+            try:
+                buffer.seek(0)
+                candidate = pd.read_csv(buffer, **params)
+
+                if {"Horodate", "Valeur"}.issubset(candidate.columns):
+                    df = candidate
+                    break
+            except Exception as exc:
+                last_error = exc
+
         if df is None:
-            raise ValueError("CSV illisible ou colonnes Horodate/Valeur absentes.")
+            raise ValueError(
+                "Le CSV ne contient pas les colonnes Horodate et Valeur "
+                "ou son format n'est pas reconnu."
+            ) from last_error
     else:
-        df = pd.read_excel(b)
-    if not {"Horodate", "Valeur"}.issubset(df.columns):
-        raise ValueError("Le fichier doit contenir Horodate et Valeur.")
-    cols = [c for c in ["Unité", "Horodate", "Valeur", "Nature", "Pas"] if c in df.columns]
-    df = df[cols].copy()
-    df["Horodate"] = pd.to_datetime(df["Horodate"], errors="coerce", dayfirst=True)
-    df["Valeur"] = pd.to_numeric(df["Valeur"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
-    return df.dropna(subset=["Horodate", "Valeur"]).sort_values("Horodate").reset_index(drop=True)
+        df = pd.read_excel(buffer)
+
+    required = {"Horodate", "Valeur"}
+    missing = required - set(df.columns)
+
+    if missing:
+        raise ValueError(
+            "Colonne(s) manquante(s) : " + ", ".join(sorted(missing))
+        )
+
+    available_columns = [
+        column
+        for column in ["Unité", "Horodate", "Valeur", "Nature", "Pas"]
+        if column in df.columns
+    ]
+
+    df = df[available_columns].copy()
+
+    df["Horodate"] = pd.to_datetime(
+        df["Horodate"],
+        errors="coerce",
+        dayfirst=True,
+    )
+
+    df["Valeur"] = pd.to_numeric(
+        df["Valeur"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce",
+    )
+
+    df = df.dropna(subset=["Horodate", "Valeur"])
+    df = df.sort_values("Horodate").reset_index(drop=True)
+
+    if df.empty:
+        raise ValueError("Aucune donnée exploitable n'a été trouvée.")
+
+    return df
 
 
-def detect_step(df):
-    d = df["Horodate"].diff()
-    d = d[d > pd.Timedelta(0)]
-    if d.empty:
-        raise ValueError("Pas de temps indétectable.")
-    m = d.mode()
-    return m.iloc[0] if not m.empty else d.median()
+def detect_time_step(df: pd.DataFrame) -> pd.Timedelta:
+    differences = df["Horodate"].diff()
+    positive_differences = differences[differences > pd.Timedelta(0)]
+
+    if positive_differences.empty:
+        raise ValueError("Impossible de détecter le pas de temps.")
+
+    modes = positive_differences.mode()
+
+    if not modes.empty:
+        return modes.iloc[0]
+
+    return positive_differences.median()
 
 
-def detect_unit(df):
+def detect_source_unit(df: pd.DataFrame) -> str:
     if "Unité" not in df.columns:
         return "Wh"
-    s = df["Unité"].dropna().astype(str).str.strip()
-    s = s[s != ""]
-    return s.mode().iloc[0] if not s.empty else "Wh"
+
+    units = (
+        df["Unité"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+    units = units[units != ""]
+
+    if units.empty:
+        return "Wh"
+
+    return units.mode().iloc[0]
 
 
-def enrich(df, step, unit):
-    out = df.copy()
-    h = step.total_seconds()/3600
-    u = str(unit).lower().replace(" ", "")
-    if u in {"wh", "w.h"}:
-        out["Energie_kWh"] = out["Valeur"]/1000
-        out["Puissance_kW"] = out["Energie_kWh"]/h
-        note = "Valeurs interprétées comme une énergie en Wh par intervalle."
-    elif u in {"kwh", "kw.h"}:
-        out["Energie_kWh"] = out["Valeur"]
-        out["Puissance_kW"] = out["Energie_kWh"]/h
-        note = "Valeurs interprétées comme une énergie en kWh par intervalle."
-    elif u in {"w", "watt", "watts"}:
-        out["Puissance_kW"] = out["Valeur"]/1000
-        out["Energie_kWh"] = out["Puissance_kW"]*h
-        note = "Valeurs interprétées comme une puissance moyenne en W."
-    elif u in {"kw", "kilowatt", "kilowatts"}:
-        out["Puissance_kW"] = out["Valeur"]
-        out["Energie_kWh"] = out["Puissance_kW"]*h
-        note = "Valeurs interprétées comme une puissance moyenne en kW."
+def enrich_energy_data(
+    df: pd.DataFrame,
+    time_step: pd.Timedelta,
+    source_unit: str,
+) -> tuple[pd.DataFrame, str]:
+    result = df.copy()
+
+    duration_hours = time_step.total_seconds() / 3600
+    normalized_unit = str(source_unit).lower().replace(" ", "")
+
+    if normalized_unit in {"wh", "w.h"}:
+        result["Energie_kWh"] = result["Valeur"] / 1000
+        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        message = "Les valeurs sont interprétées comme une énergie en Wh par intervalle."
+
+    elif normalized_unit in {"kwh", "kw.h"}:
+        result["Energie_kWh"] = result["Valeur"]
+        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        message = "Les valeurs sont interprétées comme une énergie en kWh par intervalle."
+
+    elif normalized_unit in {"w", "watt", "watts"}:
+        result["Puissance_kW"] = result["Valeur"] / 1000
+        result["Energie_kWh"] = result["Puissance_kW"] * duration_hours
+        message = "Les valeurs sont interprétées comme une puissance moyenne en W."
+
+    elif normalized_unit in {"kw", "kilowatt", "kilowatts"}:
+        result["Puissance_kW"] = result["Valeur"]
+        result["Energie_kWh"] = result["Puissance_kW"] * duration_hours
+        message = "Les valeurs sont interprétées comme une puissance moyenne en kW."
+
     else:
-        out["Energie_kWh"] = out["Valeur"]/1000
-        out["Puissance_kW"] = out["Energie_kWh"]/h
-        note = f"Unité « {unit} » non reconnue : hypothèse Wh par intervalle."
-    return out, note
+        result["Energie_kWh"] = result["Valeur"] / 1000
+        result["Puissance_kW"] = result["Energie_kWh"] / duration_hours
+        message = (
+            f"Unité « {source_unit} » non reconnue : "
+            "hypothèse Wh par intervalle."
+        )
+
+    return result, message
 
 
-def hourly(df):
-    x = df.copy(); x["Heure"] = x["Horodate"].dt.floor("h")
-    return x.groupby("Heure", as_index=False).agg(Energie_kWh=("Energie_kWh","sum"), Puissance_kW=("Puissance_kW","mean"), Nb_points=("Valeur","size")).rename(columns={"Heure":"Horodate"})
+def filter_period(
+    df: pd.DataFrame,
+    period_mode: str,
+    selected_year: int | None,
+    start_date,
+    end_date,
+) -> pd.DataFrame:
+    result = df.copy()
+
+    if period_mode == "Année" and selected_year is not None:
+        result = result[result["Horodate"].dt.year == selected_year]
+
+    elif period_mode == "Période personnalisée":
+        start_timestamp = pd.Timestamp(start_date)
+        end_exclusive = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+
+        result = result[
+            (result["Horodate"] >= start_timestamp)
+            & (result["Horodate"] < end_exclusive)
+        ]
+
+    return result.copy()
 
 
-def daily(df):
-    x = df.copy(); x["Date"] = x["Horodate"].dt.normalize()
-    r = x.groupby("Date", as_index=False).agg(Consommation_kWh=("Energie_kWh","sum"), Puissance_moyenne_kW=("Puissance_kW","mean"), Puissance_max_kW=("Puissance_kW","max"), Nb_points=("Valeur","size"))
-    r["Jour_num"] = r["Date"].dt.weekday; r["Jour"] = r["Jour_num"].map(WEEKDAY_MAP); r["Année"] = r["Date"].dt.year; r["Mois"] = r["Date"].dt.month.map(MONTHS)
-    return r
+def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
+    hourly = df.copy()
+    hourly["Horodate_heure"] = hourly["Horodate"].dt.floor("h")
+
+    hourly = (
+        hourly.groupby("Horodate_heure", as_index=False)
+        .agg(
+            Energie_kWh=("Energie_kWh", "sum"),
+            Puissance_kW=("Puissance_kW", "mean"),
+            Nombre_points=("Valeur", "size"),
+        )
+        .rename(columns={"Horodate_heure": "Horodate"})
+        .sort_values("Horodate")
+        .reset_index(drop=True)
+    )
+
+    return hourly
 
 
-def monthly(df):
-    x = df.copy(); x["Mois_date"] = x["Horodate"].dt.to_period("M").dt.to_timestamp()
-    return x.groupby("Mois_date", as_index=False).agg(Consommation_kWh=("Energie_kWh","sum"), Puissance_moyenne_kW=("Puissance_kW","mean"), Puissance_max_kW=("Puissance_kW","max"))
+def build_daily_data(df: pd.DataFrame) -> pd.DataFrame:
+    daily = df.copy()
+    daily["Date"] = daily["Horodate"].dt.normalize()
+
+    daily = (
+        daily.groupby("Date", as_index=False)
+        .agg(
+            Consommation_kWh=("Energie_kWh", "sum"),
+            Puissance_moyenne_kW=("Puissance_kW", "mean"),
+            Puissance_max_kW=("Puissance_kW", "max"),
+            Nombre_points=("Valeur", "size"),
+        )
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+    daily["Jour_num"] = daily["Date"].dt.weekday
+    daily["Jour"] = daily["Jour_num"].map(WEEKDAYS)
+    daily["Année"] = daily["Date"].dt.year
+    daily["Mois_num"] = daily["Date"].dt.month
+    daily["Mois"] = daily["Mois_num"].map(MONTHS)
+
+    return daily
 
 
-def matrix_week_hour(h):
-    x = h.copy(); x["Jour"] = x["Horodate"].dt.weekday.map(WEEKDAY_MAP); x["Heure"] = x["Horodate"].dt.hour
-    return x.pivot_table(index="Heure", columns="Jour", values="Puissance_kW", aggfunc="mean").reindex(index=range(24), columns=WEEKDAYS)
+def build_monthly_data(df: pd.DataFrame) -> pd.DataFrame:
+    monthly = df.copy()
+    monthly["Mois_date"] = (
+        monthly["Horodate"]
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+
+    return (
+        monthly.groupby("Mois_date", as_index=False)
+        .agg(
+            Consommation_kWh=("Energie_kWh", "sum"),
+            Puissance_moyenne_kW=("Puissance_kW", "mean"),
+            Puissance_max_kW=("Puissance_kW", "max"),
+        )
+        .sort_values("Mois_date")
+        .reset_index(drop=True)
+    )
 
 
-def excel_export(raw, h, d, m, mat, meta):
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        meta.to_excel(writer, index=False, sheet_name="Synthèse")
-        raw.to_excel(writer, index=False, sheet_name="Données nettoyées")
-        h.to_excel(writer, index=False, sheet_name="Profil horaire")
-        d.to_excel(writer, index=False, sheet_name="Consommations journalières")
-        m.to_excel(writer, index=False, sheet_name="Consommations mensuelles")
-        mat.to_excel(writer, sheet_name="Moyenne heure-jour")
-        for ws in writer.book.worksheets:
-            ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
-            for cells in ws.columns:
-                width = min(max(max(len(str(c.value or "")) for c in cells)+2, 11), 34)
-                ws.column_dimensions[cells[0].column_letter].width = width
-    return out.getvalue()
+def build_weekday_hour_matrix(hourly: pd.DataFrame) -> pd.DataFrame:
+    data = hourly.copy()
+    data["Jour_num"] = data["Horodate"].dt.weekday
+    data["Jour"] = data["Jour_num"].map(WEEKDAYS)
+    data["Heure"] = data["Horodate"].dt.hour
+
+    matrix = data.pivot_table(
+        index="Heure",
+        columns="Jour",
+        values="Puissance_kW",
+        aggfunc="mean",
+    )
+
+    return matrix.reindex(
+        index=range(24),
+        columns=WEEKDAY_ORDER,
+    )
 
 
-def fr(v, n=1):
-    return f"{v:,.{n}f}".replace(",", " ").replace(".", ",")
+def make_colored_style(matrix: pd.DataFrame):
+    return (
+        matrix.style
+        .format("{:.1f}")
+        .background_gradient(
+            cmap="RdYlGn_r",
+            axis=None,
+        )
+        .set_properties(
+            **{
+                "text-align": "center",
+                "font-weight": "600",
+                "border": "1px solid #FFFFFF",
+            }
+        )
+        .set_table_styles(
+            [
+                {
+                    "selector": "th",
+                    "props": [
+                        ("background-color", CMA_BLUE),
+                        ("color", "white"),
+                        ("text-align", "center"),
+                        ("font-weight", "700"),
+                    ],
+                }
+            ]
+        )
+    )
 
 
-header()
-st.markdown('<div class="card"><strong>Objectif :</strong> transformer un export Enedis en tableau de bord, profils horaires, consommations journalières et export Excel prêt à exploiter.</div>', unsafe_allow_html=True)
+def build_daily_calendar(
+    daily_df: pd.DataFrame,
+    year: int,
+) -> pd.DataFrame:
+    year_data = daily_df[daily_df["Année"] == year].copy()
+
+    if year_data.empty:
+        return pd.DataFrame()
+
+    first_day = pd.Timestamp(f"{year}-01-01")
+    first_monday = first_day - pd.Timedelta(days=first_day.weekday())
+
+    year_data["Index_jour"] = (
+        year_data["Date"] - first_monday
+    ).dt.days
+
+    year_data["Semaine_calendrier"] = (
+        year_data["Index_jour"] // 7 + 1
+    )
+
+    year_data["Jour_num"] = year_data["Date"].dt.weekday
+
+    matrix = year_data.pivot_table(
+        index="Semaine_calendrier",
+        columns="Jour_num",
+        values="Consommation_kWh",
+        aggfunc="sum",
+    )
+
+    return matrix.reindex(columns=range(7))
+
+
+def format_fr(value: float, decimals: int = 1) -> str:
+    return (
+        f"{value:,.{decimals}f}"
+        .replace(",", " ")
+        .replace(".", ",")
+    )
+
+
+def make_excel_export(
+    hourly_standardized_data: pd.DataFrame,
+    hourly_data: pd.DataFrame,
+    daily_data: pd.DataFrame,
+    monthly_data: pd.DataFrame,
+    weekday_hour_matrix: pd.DataFrame,
+    summary: pd.DataFrame,
+) -> bytes:
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary.to_excel(writer, index=False, sheet_name="Synthèse")
+        hourly_standardized_data.to_excel(
+            writer,
+            index=False,
+            sheet_name="Données traitées 1h",
+        )
+        hourly_data.to_excel(writer, index=False, sheet_name="Profil horaire")
+        daily_data.to_excel(
+            writer,
+            index=False,
+            sheet_name="Consommations journalières",
+        )
+        monthly_data.to_excel(
+            writer,
+            index=False,
+            sheet_name="Consommations mensuelles",
+        )
+        weekday_hour_matrix.to_excel(
+            writer,
+            sheet_name="Moyenne heure-jour",
+        )
+
+        workbook = writer.book
+
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+
+            for column_cells in worksheet.columns:
+                max_length = 0
+                column_letter = column_cells[0].column_letter
+
+                for cell in column_cells:
+                    max_length = max(
+                        max_length,
+                        len(str(cell.value or "")),
+                    )
+
+                worksheet.column_dimensions[column_letter].width = min(
+                    max(max_length + 2, 11),
+                    35,
+                )
+
+    return output.getvalue()
+
+
+# ============================================================
+# ACCUEIL
+# ============================================================
+
+render_header()
+
+st.markdown(
+    """
+    <div class="intro-card">
+        <strong>Fonctionnement :</strong> importez un export Enedis pour générer
+        automatiquement les consommations journalières, les profils horaires,
+        les tableaux colorés et les indicateurs utiles au pré-diagnostic
+        photovoltaïque.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# IMPORT ET PARAMÈTRES
+# ============================================================
 
 with st.sidebar:
     st.markdown("## 1. Import")
-    uploaded = st.file_uploader("Fichier Enedis", type=["csv","xlsx","xls"])
 
-if uploaded is None:
-    c1,c2,c3 = st.columns(3)
-    for col,title,text in [(c1,"1. Importer","Déposez un export Enedis CSV ou Excel."),(c2,"2. Analyser","Les profils horaires et journaliers sont générés automatiquement."),(c3,"3. Exporter","Téléchargez un classeur Excel complet.")]:
-        with col: st.markdown(f'<div class="card"><h3>{title}</h3><p>{text}</p></div>', unsafe_allow_html=True)
-    st.info("Importez un fichier dans le panneau de gauche pour commencer.")
+    uploaded_file = st.file_uploader(
+        "Fichier Enedis",
+        type=["csv", "xlsx", "xls"],
+        help="Colonnes obligatoires : Horodate et Valeur.",
+    )
+
+if uploaded_file is None:
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.info("📂 Importez un fichier CSV ou Excel Enedis.")
+
+    with col2:
+        st.info("📊 L'application calcule les profils et consommations.")
+
+    with col3:
+        st.info("📥 Exportez les résultats dans un classeur Excel.")
+
     st.stop()
 
+
 try:
-    base = read_file(uploaded.getvalue(), uploaded.name)
-    step = detect_step(base); unit = detect_unit(base); base, unit_note = enrich(base, step, unit)
-except Exception as e:
-    st.error(f"Impossible de traiter le fichier : {e}"); st.stop()
+    source_df = read_enedis_file(
+        uploaded_file.getvalue(),
+        uploaded_file.name,
+    )
+    time_step = detect_time_step(source_df)
+    source_unit = detect_source_unit(source_df)
+    enriched_df, interpretation = enrich_energy_data(
+        source_df,
+        time_step,
+        source_unit,
+    )
+except Exception as exc:
+    st.error(f"Impossible de traiter le fichier : {exc}")
+    st.stop()
+
+
+available_years = sorted(
+    enriched_df["Horodate"].dt.year.unique().tolist()
+)
 
 with st.sidebar:
-    st.markdown("---"); st.markdown("## 2. Période")
-    mode = st.radio("Période d'analyse", ["Toutes les données", "Année", "Période personnalisée"])
-    years = sorted(base["Horodate"].dt.year.unique().tolist())
-    year = None; start = base["Horodate"].min().date(); end = base["Horodate"].max().date()
-    if mode == "Année": year = st.selectbox("Année", years, index=len(years)-1)
-    elif mode == "Période personnalisée":
-        start = st.date_input("Date de début", start); end = st.date_input("Date de fin", end)
-    st.markdown("---"); st.markdown("## 3. Hypothèse solaire")
-    solar_start = st.slider("Début",0,23,8); solar_end = st.slider("Fin",1,24,18)
+    st.markdown("---")
+    st.markdown("## 2. Période")
 
-work = base.copy()
-if mode == "Année": work = work[work["Horodate"].dt.year == year].copy()
-elif mode == "Période personnalisée":
-    work = work[(work["Horodate"] >= pd.Timestamp(start)) & (work["Horodate"] < pd.Timestamp(end)+pd.Timedelta(days=1))].copy()
-if work.empty: st.warning("Aucune donnée sur la période choisie."); st.stop()
+    period_mode = st.radio(
+        "Période analysée",
+        [
+            "Toutes les données",
+            "Année",
+            "Période personnalisée",
+        ],
+    )
 
-h = hourly(work); d = daily(work); m = monthly(work); mat = matrix_week_hour(h)
-total = work["Energie_kWh"].sum(); avg_day = d["Consommation_kWh"].mean(); med_day = d["Consommation_kWh"].median(); peak = work["Puissance_kW"].max(); mean_kw = work["Puissance_kW"].mean()
-solar = work.loc[(work["Horodate"].dt.hour >= solar_start) & (work["Horodate"].dt.hour < solar_end), "Energie_kWh"].sum(); solar_share = solar/total*100 if total else 0; load_factor = mean_kw/peak*100 if peak else 0
-expected = round(pd.Timedelta(days=1)/step); by_day = work.assign(Date=work["Horodate"].dt.date).groupby("Date").size(); delta = round(pd.Timedelta(hours=1)/step); valid = [expected, expected-delta, expected+delta]; unusual = by_day[~by_day.isin(valid)]; duplicates = work["Horodate"].duplicated().sum()
+    selected_year = None
+    start_date = enriched_df["Horodate"].min().date()
+    end_date = enriched_df["Horodate"].max().date()
 
-c1,c2,c3 = st.columns([2,1,1]); c1.info(f"📅 Du **{work['Horodate'].min():%d/%m/%Y %H:%M}** au **{work['Horodate'].max():%d/%m/%Y %H:%M}**"); c2.info(f"⏱ **{int(step.total_seconds()/60)} min**"); c3.info(f"📐 **{unit}**"); st.caption(unit_note)
+    if period_mode == "Année":
+        selected_year = st.selectbox(
+            "Année",
+            available_years,
+            index=len(available_years) - 1,
+        )
 
-t1,t2,t3,t4,t5 = st.tabs(["📊 Tableau de bord","🕒 Profils horaires","📅 Journées","✅ Qualité","📥 Export"])
+    elif period_mode == "Période personnalisée":
+        start_date = st.date_input(
+            "Date de début",
+            value=start_date,
+        )
+        end_date = st.date_input(
+            "Date de fin",
+            value=end_date,
+        )
 
-with t1:
-    a,b,c,e,f = st.columns(5)
-    a.metric("Consommation totale",f"{fr(total,0)} kWh"); b.metric("Moyenne journalière",f"{fr(avg_day)} kWh"); c.metric("Pic de puissance",f"{fr(peak)} kW"); e.metric(f"Part {solar_start}h–{solar_end}h",f"{fr(solar_share)} %"); f.metric("Facteur de charge",f"{fr(load_factor)} %")
-    left,right = st.columns([1.45,1])
-    with left:
-        fig = px.bar(m,x="Mois_date",y="Consommation_kWh",title="Consommation mensuelle",labels={"Mois_date":"Mois","Consommation_kWh":"kWh"},color_discrete_sequence=[CMA_BLUE]); fig.update_layout(template="plotly_white",showlegend=False); st.plotly_chart(fig,use_container_width=True)
-    with right:
-        fig = go.Figure(go.Pie(labels=[f"Entre {solar_start}h et {solar_end}h","Hors plage solaire"],values=[solar,max(total-solar,0)],hole=.62,marker=dict(colors=[CMA_RED,"#EAF1F8"]),textinfo="label+percent")); fig.update_layout(title="Répartition de la consommation",template="plotly_white",showlegend=False); st.plotly_chart(fig,use_container_width=True)
-    fig = px.line(h,x="Horodate",y="Puissance_kW",title="Évolution de la puissance moyenne horaire",labels={"Horodate":"Date et heure","Puissance_kW":"kW"},color_discrete_sequence=[CMA_RED]); fig.update_layout(template="plotly_white",hovermode="x unified"); st.plotly_chart(fig,use_container_width=True)
+    st.markdown("---")
+    st.markdown("## 3. Plage solaire")
 
-with t2:
-    fig = go.Figure(go.Heatmap(z=mat.values,x=mat.columns,y=[f"{i:02d}:00" for i in mat.index],colorscale=[[0,"#5DAE74"],[.35,"#B8D96B"],[.58,"#F4E66B"],[.78,"#F7A65A"],[1,"#EF5A5A"]],colorbar=dict(title="kW"),hovertemplate="%{x}<br>%{y}<br>%{z:.2f} kW<extra></extra>")); fig.update_layout(title="Puissance moyenne selon le jour et l'heure",template="plotly_white",height=720); fig.update_yaxes(autorange="reversed"); st.plotly_chart(fig,use_container_width=True)
-    long = mat.reset_index().melt(id_vars="Heure",var_name="Jour",value_name="Puissance_kW").dropna(); fig = px.line(long,x="Heure",y="Puissance_kW",color="Jour",markers=True,title="Profil de charge moyen sur 24 heures"); fig.update_layout(template="plotly_white",hovermode="x unified"); fig.update_xaxes(dtick=1); st.plotly_chart(fig,use_container_width=True)
-    st.dataframe(mat.round(2),use_container_width=True,height=450)
+    solar_start = st.slider(
+        "Début",
+        min_value=0,
+        max_value=23,
+        value=8,
+        format="%dh",
+    )
 
-with t3:
-    a,b,c = st.columns(3); a.metric("Moyenne",f"{fr(avg_day)} kWh/j"); b.metric("Médiane",f"{fr(med_day)} kWh/j"); c.metric("Maximum",f"{fr(d['Consommation_kWh'].max())} kWh")
-    fig = px.bar(d,x="Date",y="Consommation_kWh",color="Jour",category_orders={"Jour":WEEKDAYS},title="Consommation quotidienne",labels={"Consommation_kWh":"kWh"}); fig.update_layout(template="plotly_white",hovermode="x unified"); st.plotly_chart(fig,use_container_width=True)
-    disp = d[["Date","Jour","Consommation_kWh","Puissance_moyenne_kW","Puissance_max_kW"]].copy(); disp["Date"] = disp["Date"].dt.strftime("%d/%m/%Y"); st.dataframe(disp,use_container_width=True,height=520)
+    solar_end = st.slider(
+        "Fin",
+        min_value=1,
+        max_value=24,
+        value=18,
+        format="%dh",
+    )
 
-with t4:
-    a,b,c,e = st.columns(4); a.metric("Lignes exploitables",f"{len(work):,}".replace(","," ")); b.metric("Doublons",int(duplicates)); c.metric("Jours atypiques",len(unusual)); e.metric("Points théoriques/jour",expected)
-    q = by_day.rename("Nombre_de_points").reset_index(); q.columns=["Date","Nombre_de_points"]; q["Statut"] = np.where(q["Nombre_de_points"].isin(valid),"Cohérent","À contrôler"); st.dataframe(q,use_container_width=True,height=450)
-    if unusual.empty: st.success("Aucune journée anormale détectée en dehors des changements d'heure possibles.")
-    else: st.warning("Certaines journées comportent un nombre de relevés inhabituel."); st.dataframe(unusual.rename("Nombre de relevés").to_frame(),use_container_width=True)
+    st.caption(
+        "Cette plage sert uniquement à mesurer la part de consommation "
+        "située pendant des heures potentiellement favorables au solaire."
+    )
 
-with t5:
-    meta = pd.DataFrame({"Indicateur":["Fichier source","Début","Fin","Pas de temps","Unité source","Consommation totale (kWh)","Moyenne journalière (kWh)","Médiane journalière (kWh)","Pic de puissance (kW)",f"Part {solar_start}h-{solar_end}h (%)","Facteur de charge (%)","Doublons","Jours atypiques"],"Valeur":[uploaded.name,work["Horodate"].min(),work["Horodate"].max(),str(step),unit,total,avg_day,med_day,peak,solar_share,load_factor,duplicates,len(unusual)]})
-    raw = work.copy(); raw["Horodate"] = raw["Horodate"].dt.strftime("%d/%m/%Y %H:%M:%S"); he = h.copy(); he["Horodate"] = he["Horodate"].dt.strftime("%d/%m/%Y %H:%M:%S"); de = d.copy(); de["Date"] = de["Date"].dt.strftime("%d/%m/%Y"); me = m.copy(); me["Mois_date"] = me["Mois_date"].dt.strftime("%m/%Y")
-    xls = excel_export(raw,he,de,me,mat.round(3),meta)
-    c1,c2 = st.columns(2)
-    with c1: st.download_button("⬇️ Télécharger le classeur Excel complet",xls,"analyse_photovoltaique_cma.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
-    with c2: st.download_button("⬇️ Télécharger les consommations journalières",de.to_csv(index=False,sep=";").encode("utf-8-sig"),"consommations_journalieres.csv","text/csv",use_container_width=True)
-    st.markdown("**Le classeur contient :** synthèse, données nettoyées, profil horaire, consommations journalières, consommations mensuelles et matrice heure × jour.")
+
+filtered_df = filter_period(
+    enriched_df,
+    period_mode,
+    selected_year,
+    start_date,
+    end_date,
+)
+
+if filtered_df.empty:
+    st.warning("Aucune donnée sur la période sélectionnée.")
+    st.stop()
+
+
+# ============================================================
+# CALCULS
+# ============================================================
+
+hourly_df = build_hourly_data(filtered_df)
+daily_df = build_daily_data(filtered_df)
+monthly_df = build_monthly_data(filtered_df)
+weekday_hour_matrix = build_weekday_hour_matrix(hourly_df)
+
+total_kwh = filtered_df["Energie_kWh"].sum()
+average_daily_kwh = daily_df["Consommation_kWh"].mean()
+median_daily_kwh = daily_df["Consommation_kWh"].median()
+maximum_power_kw = filtered_df["Puissance_kW"].max()
+mean_power_kw = filtered_df["Puissance_kW"].mean()
+
+solar_mask = (
+    (filtered_df["Horodate"].dt.hour >= solar_start)
+    & (filtered_df["Horodate"].dt.hour < solar_end)
+)
+
+solar_kwh = filtered_df.loc[
+    solar_mask,
+    "Energie_kWh",
+].sum()
+
+solar_share = (
+    solar_kwh / total_kwh * 100
+    if total_kwh
+    else 0
+)
+
+load_factor = (
+    mean_power_kw / maximum_power_kw * 100
+    if maximum_power_kw
+    else 0
+)
+
+duplicate_count = int(
+    filtered_df["Horodate"].duplicated().sum()
+)
+
+expected_points_per_day = round(
+    pd.Timedelta(days=1) / time_step
+)
+
+one_hour_points = round(
+    pd.Timedelta(hours=1) / time_step
+)
+
+points_per_day = (
+    filtered_df.assign(
+        Date=filtered_df["Horodate"].dt.date
+    )
+    .groupby("Date")
+    .size()
+)
+
+valid_daily_counts = {
+    expected_points_per_day,
+    expected_points_per_day - one_hour_points,
+    expected_points_per_day + one_hour_points,
+}
+
+atypical_days = points_per_day[
+    ~points_per_day.isin(valid_daily_counts)
+]
+
+
+# ============================================================
+# INFORMATIONS DE CONTRÔLE
+# ============================================================
+
+info1, info2, info3 = st.columns([2, 1, 1])
+
+with info1:
+    st.info(
+        f"📅 Données analysées du "
+        f"**{filtered_df['Horodate'].min():%d/%m/%Y %H:%M}** "
+        f"au **{filtered_df['Horodate'].max():%d/%m/%Y %H:%M}**"
+    )
+
+with info2:
+    st.info(
+        f"⏱ Pas : **{int(time_step.total_seconds() / 60)} min**"
+    )
+
+with info3:
+    st.info(f"📐 Unité : **{source_unit}**")
+
+st.caption(interpretation)
+
+
+# ============================================================
+# ONGLETS
+# ============================================================
+
+(
+    tab_dashboard,
+    tab_profiles,
+    tab_daily,
+    tab_quality,
+    tab_export,
+) = st.tabs(
+    [
+        "📊 Tableau de bord",
+        "🕒 Profils horaires",
+        "📅 Consommations journalières",
+        "✅ Qualité des données",
+        "📥 Export",
+    ]
+)
+
+
+# ============================================================
+# TABLEAU DE BORD
+# ============================================================
+
+with tab_dashboard:
+    metric1, metric2, metric3, metric4, metric5 = st.columns(5)
+
+    metric1.metric(
+        "Consommation totale",
+        f"{format_fr(total_kwh, 0)} kWh",
+    )
+
+    metric2.metric(
+        "Moyenne journalière",
+        f"{format_fr(average_daily_kwh, 1)} kWh",
+    )
+
+    metric3.metric(
+        "Pic de puissance",
+        f"{format_fr(maximum_power_kw, 1)} kW",
+    )
+
+    metric4.metric(
+        f"Part {solar_start}h–{solar_end}h",
+        f"{format_fr(solar_share, 1)} %",
+    )
+
+    metric5.metric(
+        "Facteur de charge",
+        f"{format_fr(load_factor, 1)} %",
+    )
+
+    chart1, chart2 = st.columns([1.5, 1])
+
+    with chart1:
+        fig_monthly = px.bar(
+            monthly_df,
+            x="Mois_date",
+            y="Consommation_kWh",
+            title="Consommation mensuelle",
+            labels={
+                "Mois_date": "Mois",
+                "Consommation_kWh": "Consommation (kWh)",
+            },
+            color_discrete_sequence=[CMA_BLUE],
+        )
+
+        fig_monthly.update_layout(
+            template="plotly_white",
+            showlegend=False,
+            hovermode="x unified",
+        )
+
+        st.plotly_chart(
+            fig_monthly,
+            use_container_width=True,
+        )
+
+    with chart2:
+        fig_solar = go.Figure(
+            data=[
+                go.Pie(
+                    labels=[
+                        f"Entre {solar_start}h et {solar_end}h",
+                        "Hors plage solaire",
+                    ],
+                    values=[
+                        solar_kwh,
+                        max(total_kwh - solar_kwh, 0),
+                    ],
+                    hole=0.62,
+                    marker=dict(
+                        colors=[CMA_RED, "#DDE6EF"]
+                    ),
+                    textinfo="label+percent",
+                )
+            ]
+        )
+
+        fig_solar.update_layout(
+            title="Répartition de la consommation",
+            template="plotly_white",
+            showlegend=False,
+        )
+
+        st.plotly_chart(
+            fig_solar,
+            use_container_width=True,
+        )
+
+    fig_global = px.line(
+        hourly_df,
+        x="Horodate",
+        y="Puissance_kW",
+        title="Évolution de la puissance moyenne horaire",
+        labels={
+            "Horodate": "Date et heure",
+            "Puissance_kW": "Puissance moyenne (kW)",
+        },
+        color_discrete_sequence=[CMA_RED],
+    )
+
+    fig_global.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+    )
+
+    st.plotly_chart(
+        fig_global,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# PROFILS HORAIRES
+# ============================================================
+
+with tab_profiles:
+    st.subheader(
+        "Consommation horaire moyenne selon le jour de la semaine"
+    )
+
+    col_table, col_chart = st.columns([1, 1.35])
+
+    with col_table:
+        display_matrix = weekday_hour_matrix.copy()
+        display_matrix.index = [
+            f"De {hour:02d}:00 à {(hour + 1) % 24:02d}:00"
+            for hour in display_matrix.index
+        ]
+        display_matrix.index.name = "Plage horaire"
+
+        st.dataframe(
+            make_colored_style(display_matrix),
+            use_container_width=True,
+            height=810,
+        )
+
+    with col_chart:
+        profile_long = (
+            weekday_hour_matrix
+            .reset_index()
+            .melt(
+                id_vars="Heure",
+                var_name="Jour",
+                value_name="Puissance_kW",
+            )
+            .dropna()
+        )
+
+        profile_long["Jour"] = pd.Categorical(
+            profile_long["Jour"],
+            categories=WEEKDAY_ORDER,
+            ordered=True,
+        )
+
+        fig_profiles = px.line(
+            profile_long,
+            x="Heure",
+            y="Puissance_kW",
+            color="Jour",
+            markers=True,
+            title=(
+                "Profil horaire moyen selon le jour "
+                "de la semaine"
+            ),
+            labels={
+                "Heure": "Heure",
+                "Puissance_kW": "Puissance moyenne (kW)",
+            },
+        )
+
+        fig_profiles.update_layout(
+            template="plotly_white",
+            hovermode="x unified",
+            legend_title_text="Jour",
+            height=810,
+        )
+
+        fig_profiles.update_xaxes(dtick=1)
+
+        st.plotly_chart(
+            fig_profiles,
+            use_container_width=True,
+        )
+
+    st.subheader("Carte thermique interactive")
+
+    heatmap = go.Figure(
+        data=go.Heatmap(
+            z=weekday_hour_matrix.values,
+            x=weekday_hour_matrix.columns,
+            y=[
+                f"{hour:02d}:00"
+                for hour in weekday_hour_matrix.index
+            ],
+            colorscale=[
+                [0.00, "#63BE7B"],
+                [0.30, "#A9D26D"],
+                [0.50, "#FFEB84"],
+                [0.72, "#F6B26B"],
+                [1.00, "#F8696B"],
+            ],
+            colorbar=dict(title="kW"),
+            hovertemplate=(
+                "Jour : %{x}<br>"
+                "Heure : %{y}<br>"
+                "Puissance moyenne : %{z:.2f} kW"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    heatmap.update_layout(
+        template="plotly_white",
+        xaxis_title="Jour de la semaine",
+        yaxis_title="Heure",
+        height=720,
+    )
+
+    heatmap.update_yaxes(autorange="reversed")
+
+    st.plotly_chart(
+        heatmap,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# CONSOMMATIONS JOURNALIÈRES
+# ============================================================
+
+with tab_daily:
+    daily1, daily2, daily3 = st.columns(3)
+
+    daily1.metric(
+        "Moyenne journalière",
+        f"{format_fr(average_daily_kwh, 1)} kWh",
+    )
+
+    daily2.metric(
+        "Médiane journalière",
+        f"{format_fr(median_daily_kwh, 1)} kWh",
+    )
+
+    daily3.metric(
+        "Maximum journalier",
+        f"{format_fr(daily_df['Consommation_kWh'].max(), 1)} kWh",
+    )
+
+    fig_daily = px.bar(
+        daily_df,
+        x="Date",
+        y="Consommation_kWh",
+        color="Jour",
+        category_orders={
+            "Jour": WEEKDAY_ORDER,
+        },
+        title="Consommation quotidienne",
+        labels={
+            "Date": "Date",
+            "Consommation_kWh": "Consommation (kWh)",
+        },
+    )
+
+    fig_daily.update_layout(
+        template="plotly_white",
+        hovermode="x unified",
+        legend_title_text="Jour",
+    )
+
+    st.plotly_chart(
+        fig_daily,
+        use_container_width=True,
+    )
+
+    calendar_years = sorted(
+        daily_df["Année"].unique().tolist()
+    )
+
+    calendar_year = st.selectbox(
+        "Année du calendrier thermique",
+        calendar_years,
+        index=len(calendar_years) - 1,
+    )
+
+    calendar_matrix = build_daily_calendar(
+        daily_df,
+        calendar_year,
+    )
+
+    if not calendar_matrix.empty:
+        calendar_heatmap = go.Figure(
+            data=go.Heatmap(
+                z=calendar_matrix.values,
+                x=WEEKDAY_ORDER,
+                y=[
+                    f"Semaine {int(week)}"
+                    for week in calendar_matrix.index
+                ],
+                colorscale=[
+                    [0.00, "#63BE7B"],
+                    [0.30, "#A9D26D"],
+                    [0.50, "#FFEB84"],
+                    [0.72, "#F6B26B"],
+                    [1.00, "#F8696B"],
+                ],
+                colorbar=dict(title="kWh"),
+                hovertemplate=(
+                    "Jour : %{x}<br>"
+                    "%{y}<br>"
+                    "Consommation : %{z:.1f} kWh"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        calendar_heatmap.update_layout(
+            title=(
+                "Calendrier des consommations journalières "
+                f"– {calendar_year}"
+            ),
+            template="plotly_white",
+            height=920,
+            xaxis_title="Jour de la semaine",
+            yaxis_title="Semaine",
+        )
+
+        calendar_heatmap.update_yaxes(
+            autorange="reversed"
+        )
+
+        st.plotly_chart(
+            calendar_heatmap,
+            use_container_width=True,
+        )
+
+    st.subheader("Tableau détaillé")
+
+    daily_display = daily_df[
+        [
+            "Date",
+            "Jour",
+            "Consommation_kWh",
+            "Puissance_moyenne_kW",
+            "Puissance_max_kW",
+        ]
+    ].copy()
+
+    daily_display["Date"] = (
+        daily_display["Date"]
+        .dt.strftime("%d/%m/%Y")
+    )
+
+    daily_style = (
+        daily_display.style
+        .format(
+            {
+                "Consommation_kWh": "{:.2f}",
+                "Puissance_moyenne_kW": "{:.2f}",
+                "Puissance_max_kW": "{:.2f}",
+            }
+        )
+        .background_gradient(
+            subset=["Consommation_kWh"],
+            cmap="RdYlGn_r",
+        )
+    )
+
+    st.dataframe(
+        daily_style,
+        use_container_width=True,
+        height=520,
+    )
+
+
+# ============================================================
+# QUALITÉ DES DONNÉES
+# ============================================================
+
+with tab_quality:
+    quality1, quality2, quality3, quality4 = st.columns(4)
+
+    quality1.metric(
+        "Lignes exploitables",
+        f"{len(filtered_df):,}".replace(",", " "),
+    )
+
+    quality2.metric(
+        "Horodatages en doublon",
+        duplicate_count,
+    )
+
+    quality3.metric(
+        "Jours atypiques",
+        len(atypical_days),
+    )
+
+    quality4.metric(
+        "Points théoriques/jour",
+        expected_points_per_day,
+    )
+
+    quality_df = (
+        points_per_day
+        .rename("Nombre_points")
+        .reset_index()
+    )
+
+    quality_df.columns = [
+        "Date",
+        "Nombre_points",
+    ]
+
+    quality_df["Statut"] = np.where(
+        quality_df["Nombre_points"].isin(
+            valid_daily_counts
+        ),
+        "Cohérent",
+        "À contrôler",
+    )
+
+    st.dataframe(
+        quality_df,
+        use_container_width=True,
+        height=480,
+    )
+
+    if atypical_days.empty:
+        st.success(
+            "Aucune journée anormale détectée, "
+            "hors changements d'heure possibles."
+        )
+    else:
+        st.warning(
+            "Certaines journées comportent un nombre "
+            "inhabituel de relevés."
+        )
+
+        st.dataframe(
+            atypical_days
+            .rename("Nombre de relevés")
+            .to_frame(),
+            use_container_width=True,
+        )
+
+
+# ============================================================
+# EXPORT
+# ============================================================
+
+with tab_export:
+    st.subheader("Exporter l'analyse")
+
+    summary_df = pd.DataFrame(
+        {
+            "Indicateur": [
+                "Fichier source",
+                "Début de période",
+                "Fin de période",
+                "Pas de temps source",
+                "Pas de temps après traitement",
+                "Unité source",
+                "Consommation totale (kWh)",
+                "Moyenne journalière (kWh)",
+                "Médiane journalière (kWh)",
+                "Pic de puissance (kW)",
+                f"Part entre {solar_start}h et {solar_end}h (%)",
+                "Facteur de charge (%)",
+                "Horodatages en doublon",
+                "Jours atypiques",
+            ],
+            "Valeur": [
+                uploaded_file.name,
+                filtered_df["Horodate"].min(),
+                filtered_df["Horodate"].max(),
+                str(time_step),
+                "01:00:00",
+                source_unit,
+                total_kwh,
+                average_daily_kwh,
+                median_daily_kwh,
+                maximum_power_kw,
+                solar_share,
+                load_factor,
+                duplicate_count,
+                len(atypical_days),
+            ],
+        }
+    )
+
+    # Export principal obligatoirement normalisé à un pas horaire.
+    # Les relevés de 30 minutes sont agrégés dans hourly_df :
+    # - moyenne pour une unité de puissance (W / kW) ;
+    # - somme pour une unité d'énergie (Wh / kWh).
+    hourly_standardized_export = hourly_df.copy()
+    normalized_unit = str(source_unit).lower().replace(" ", "")
+
+    if normalized_unit in {"w", "watt", "watts"}:
+        hourly_standardized_export["Valeur"] = (
+            hourly_standardized_export["Puissance_kW"] * 1000
+        )
+        export_unit = "W"
+    elif normalized_unit in {"kw", "kilowatt", "kilowatts"}:
+        hourly_standardized_export["Valeur"] = (
+            hourly_standardized_export["Puissance_kW"]
+        )
+        export_unit = "kW"
+    elif normalized_unit in {"kwh", "kw.h"}:
+        hourly_standardized_export["Valeur"] = (
+            hourly_standardized_export["Energie_kWh"]
+        )
+        export_unit = "kWh"
+    else:
+        hourly_standardized_export["Valeur"] = (
+            hourly_standardized_export["Energie_kWh"] * 1000
+        )
+        export_unit = "Wh"
+
+    hourly_standardized_export.insert(0, "Unité", export_unit)
+    hourly_standardized_export["Pas"] = "PT60M"
+    hourly_standardized_export["Horodate"] = (
+        hourly_standardized_export["Horodate"]
+        .dt.strftime("%d/%m/%Y %H:%M:%S")
+    )
+    hourly_standardized_export = hourly_standardized_export[
+        ["Unité", "Horodate", "Valeur", "Pas"]
+    ]
+
+    hourly_export = hourly_df.copy()
+    hourly_export["Horodate"] = (
+        hourly_export["Horodate"]
+        .dt.strftime("%d/%m/%Y %H:%M:%S")
+    )
+
+    daily_export = daily_df.copy()
+    daily_export["Date"] = (
+        daily_export["Date"]
+        .dt.strftime("%d/%m/%Y")
+    )
+
+    monthly_export = monthly_df.copy()
+    monthly_export["Mois_date"] = (
+        monthly_export["Mois_date"]
+        .dt.strftime("%m/%Y")
+    )
+
+    excel_bytes = make_excel_export(
+        hourly_standardized_export,
+        hourly_export,
+        daily_export,
+        monthly_export,
+        weekday_hour_matrix.round(3),
+        summary_df,
+    )
+
+    export1, export2 = st.columns(2)
+
+    with export1:
+        st.download_button(
+            "⬇️ Télécharger le classeur Excel complet",
+            data=excel_bytes,
+            file_name="analyse_photovoltaique_cma.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            use_container_width=True,
+        )
+
+    with export2:
+        csv_data = daily_export.to_csv(
+            index=False,
+            sep=";",
+        ).encode("utf-8-sig")
+
+        st.download_button(
+            "⬇️ Télécharger les consommations journalières",
+            data=csv_data,
+            file_name="consommations_journalieres.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    st.markdown(
+        """
+        Le classeur Excel contient :
+
+        - la synthèse générale ;
+        - les données traitées et normalisées à un pas de 1 heure ;
+        - le profil horaire détaillé ;
+        - les consommations journalières ;
+        - les consommations mensuelles ;
+        - le tableau moyen heure × jour de la semaine.
+        """
+    )
