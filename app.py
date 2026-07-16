@@ -60,110 +60,358 @@ MONTHS = {
 st.markdown(
     f"""
     <style>
-        .stApp {{
-            background-color: #FFFFFF;
-            color: {CMA_TEXT};
-        }}
+        :root {
+            --cma-blue: #17365D;
+            --cma-blue-dark: #102947;
+            --cma-red: #E53935;
+            --cma-red-dark: #C82E2A;
+            --cma-grey: #F3F5F7;
+            --cma-border: #E1E7ED;
+            --cma-text: #202735;
+        }
 
-        .block-container {{
+        .stApp {
+            background:
+                radial-gradient(circle at top right, rgba(229,57,53,.035), transparent 28rem),
+                #FFFFFF;
+            color: var(--cma-text);
+        }
+
+        .block-container {
             max-width: 1500px;
-            padding-top: 1.2rem;
+            padding-top: 1rem;
             padding-bottom: 3rem;
-        }}
+        }
 
-        [data-testid="stSidebar"] {{
-            background-color: {CMA_GREY};
+        [data-testid="stSidebar"] {
+            background:
+                linear-gradient(180deg, #F8F9FB 0%, #EEF2F6 100%);
             border-right: 1px solid #DDE3E9;
-        }}
+        }
 
-        .cma-header {{
+        [data-testid="stSidebar"] .block-container {
+            padding-top: 1.2rem;
+        }
+
+        /* Bandeau principal */
+        .cma-header {
+            position: relative;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 24px;
-            background: linear-gradient(
-                115deg,
-                {CMA_BLUE} 0%,
-                {CMA_BLUE} 75%,
-                {CMA_RED} 75%,
-                {CMA_RED} 100%
-            );
+            gap: 48px;
+            min-height: 215px;
+            padding: 38px 42px;
+            overflow: hidden;
             color: white;
-            padding: 26px 30px;
-            border-radius: 18px;
-            margin-bottom: 18px;
-            box-shadow: 0 10px 28px rgba(23, 54, 93, 0.16);
-        }}
+            border-radius: 22px;
+            margin-bottom: 22px;
+            background:
+                linear-gradient(
+                    116deg,
+                    var(--cma-blue) 0%,
+                    var(--cma-blue) 73%,
+                    var(--cma-red) 73%,
+                    var(--cma-red) 100%
+                );
+            box-shadow:
+                0 20px 45px rgba(23,54,93,.18),
+                0 4px 12px rgba(23,54,93,.09);
+        }
 
-        .cma-header h1 {{
+        .cma-header::before {
+            content: "☀";
+            position: absolute;
+            left: 58%;
+            top: -52px;
+            font-size: 210px;
+            line-height: 1;
+            color: rgba(255,255,255,.045);
+            transform: rotate(-10deg);
+            pointer-events: none;
+        }
+
+        .cma-header::after {
+            content: "";
+            position: absolute;
+            right: 24%;
+            bottom: -78px;
+            width: 280px;
+            height: 150px;
+            border: 3px solid rgba(255,255,255,.05);
+            border-radius: 24px;
+            transform: rotate(-9deg);
+            pointer-events: none;
+        }
+
+        .cma-header-content {
+            position: relative;
+            z-index: 2;
+            max-width: 760px;
+        }
+
+        .cma-eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+            padding: 6px 11px;
+            border: 1px solid rgba(255,255,255,.28);
+            border-radius: 999px;
+            background: rgba(255,255,255,.10);
+            font-size: .78rem;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .cma-header h1 {
             margin: 0;
-            font-size: 2rem;
-            font-weight: 800;
-            line-height: 1.1;
-        }}
+            max-width: 720px;
+            color: #FFFFFF !important;
+            font-size: clamp(2.35rem, 4vw, 3.65rem);
+            font-weight: 900;
+            line-height: 1.02;
+            letter-spacing: -0.045em;
+            text-shadow: 0 4px 16px rgba(0,0,0,.28);
+        }
 
-        .cma-header p {{
-            margin: 8px 0 0;
-            font-size: 1rem;
-            opacity: 0.92;
-        }}
+        .cma-title-line {
+            width: 96px;
+            height: 5px;
+            margin: 20px 0 17px;
+            background: #FFFFFF;
+            border-radius: 999px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.12);
+        }
 
-        .cma-logo {{
-            min-width: 190px;
-            background: white;
-            color: {CMA_BLUE};
-            border-radius: 12px;
-            padding: 12px 16px;
+        .cma-header p {
+            margin: 0;
+            max-width: 680px;
+            color: rgba(255,255,255,.96);
+            font-size: 1.2rem;
+            font-weight: 500;
+            line-height: 1.5;
+        }
+
+        .cma-logo {
+            position: relative;
+            z-index: 3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 320px;
+            width: 320px;
+            min-height: 142px;
+            padding: 18px 22px;
+            background: #FFFFFF;
+            color: var(--cma-blue);
+            border: 1px solid rgba(255,255,255,.65);
+            border-radius: 19px;
             text-align: center;
-            font-weight: 800;
-        }}
+            font-size: 1.35rem;
+            font-weight: 900;
+            box-shadow:
+                0 15px 32px rgba(0,0,0,.16),
+                inset 0 0 0 1px rgba(23,54,93,.04);
+        }
 
-        .intro-card {{
-            border: 1px solid #E3E8EE;
-            border-radius: 14px;
-            padding: 18px 20px;
-            margin-bottom: 18px;
-            box-shadow: 0 5px 16px rgba(23, 54, 93, 0.06);
-            background: white;
-        }}
+        .cma-logo img {
+            display: block;
+            width: 100%;
+            max-width: 280px;
+            max-height: 112px;
+            object-fit: contain;
+        }
 
-        div[data-testid="stMetric"] {{
-            background: white;
-            border: 1px solid #E3E8EE;
-            border-radius: 14px;
-            padding: 16px;
-            box-shadow: 0 5px 16px rgba(23, 54, 93, 0.05);
-        }}
+        /* Carte d'introduction */
+        .intro-card {
+            display: flex;
+            align-items: flex-start;
+            gap: 15px;
+            padding: 21px 24px;
+            margin-bottom: 20px;
+            background: #FFFFFF;
+            border: 1px solid var(--cma-border);
+            border-left: 6px solid var(--cma-red);
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(23,54,93,.07);
+            font-size: 1.03rem;
+            line-height: 1.65;
+        }
 
-        .stButton > button {{
-            background: {CMA_RED};
+        .intro-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 42px;
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: #EDF3F9;
+            font-size: 1.25rem;
+        }
+
+        /* Cartes de parcours */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 18px;
+            margin: 8px 0 24px;
+        }
+
+        .feature-card {
+            position: relative;
+            min-height: 150px;
+            padding: 24px;
+            overflow: hidden;
+            background: #FFFFFF;
+            border: 1px solid var(--cma-border);
+            border-radius: 18px;
+            box-shadow: 0 8px 22px rgba(23,54,93,.07);
+            transition:
+                transform .22s ease,
+                box-shadow .22s ease,
+                border-color .22s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(23,54,93,.25);
+            box-shadow: 0 16px 32px rgba(23,54,93,.12);
+        }
+
+        .feature-card::after {
+            content: "";
+            position: absolute;
+            right: -28px;
+            bottom: -35px;
+            width: 110px;
+            height: 110px;
+            border-radius: 50%;
+            background: rgba(23,54,93,.035);
+        }
+
+        .feature-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 52px;
+            height: 52px;
+            margin-bottom: 16px;
+            border-radius: 15px;
+            background: #EAF1F8;
+            font-size: 1.6rem;
+        }
+
+        .feature-card h3 {
+            margin: 0 0 7px;
+            color: var(--cma-blue) !important;
+            font-size: 1.2rem;
+            font-weight: 850;
+        }
+
+        .feature-card p {
+            margin: 0;
+            color: #687487;
+            line-height: 1.5;
+        }
+
+        /* KPI */
+        div[data-testid="stMetric"] {
+            min-height: 122px;
+            padding: 18px 19px;
+            background: #FFFFFF;
+            border: 1px solid var(--cma-border);
+            border-top: 4px solid var(--cma-blue);
+            border-radius: 15px;
+            box-shadow: 0 7px 20px rgba(23,54,93,.06);
+        }
+
+        div[data-testid="stMetricLabel"] {
+            color: #697589;
+            font-size: .82rem;
+            font-weight: 750;
+            text-transform: uppercase;
+            letter-spacing: .03em;
+        }
+
+        div[data-testid="stMetricValue"] {
+            color: var(--cma-blue);
+            font-size: 1.85rem;
+            font-weight: 850;
+        }
+
+        /* Onglets */
+        button[data-baseweb="tab"] {
+            font-weight: 750;
+        }
+
+        /* Boutons */
+        .stButton > button {
+            min-height: 44px;
+            padding: .65rem 1.15rem;
+            background: var(--cma-red);
             color: white;
             border: 0;
-            border-radius: 10px;
-            font-weight: 700;
-        }}
+            border-radius: 11px;
+            font-weight: 750;
+            box-shadow: 0 5px 13px rgba(229,57,53,.18);
+        }
 
-        .stButton > button:hover {{
-            background: #C82E2A;
+        .stButton > button:hover {
+            background: var(--cma-red-dark);
             color: white;
-        }}
+            transform: translateY(-1px);
+        }
 
-        .stDownloadButton > button {{
-            background: {CMA_BLUE};
+        .stDownloadButton > button {
+            min-height: 46px;
+            background: var(--cma-blue);
             color: white;
             border: 0;
-            border-radius: 10px;
-            font-weight: 700;
-        }}
+            border-radius: 11px;
+            font-weight: 750;
+            box-shadow: 0 5px 13px rgba(23,54,93,.16);
+        }
 
-        .stDownloadButton > button:hover {{
-            background: #102947;
+        .stDownloadButton > button:hover {
+            background: var(--cma-blue-dark);
             color: white;
-        }}
+            transform: translateY(-1px);
+        }
 
-        h2, h3 {{
-            color: {CMA_BLUE};
-        }}
+        h2, h3 {
+            color: var(--cma-blue);
+        }
+
+        @media (max-width: 900px) {
+            .cma-header {
+                flex-direction: column;
+                align-items: stretch;
+                min-height: auto;
+                padding: 30px 26px;
+                background:
+                    linear-gradient(
+                        165deg,
+                        var(--cma-blue) 0%,
+                        var(--cma-blue) 70%,
+                        var(--cma-red) 70%,
+                        var(--cma-red) 100%
+                    );
+            }
+
+            .cma-logo {
+                width: 100%;
+                max-width: 360px;
+                flex-basis: auto;
+                align-self: center;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -201,22 +449,25 @@ def render_header() -> None:
     if logo_uri:
         logo_html = (
             f'<div class="cma-logo">'
-            f'<img src="{logo_uri}" style="max-height:72px;max-width:210px;">'
+            f'<img src="{logo_uri}" alt="Logo CMA Nouvelle-Aquitaine">'
             f"</div>"
         )
     else:
         logo_html = (
             '<div class="cma-logo">'
-            'CMA<br><span style="font-size:.72rem;font-weight:600;">'
+            'CMA<br><span style="font-size:.76rem;font-weight:650;">'
             "NOUVELLE-AQUITAINE</span></div>"
         )
 
     st.markdown(
         f"""
         <div class="cma-header">
-            <div>
+            <div class="cma-header-content">
+                <div class="cma-eyebrow">CMA Nouvelle-Aquitaine · Outil métier</div>
                 <h1>Pré-diagnostic photovoltaïque</h1>
-                <p>Analyse automatisée des courbes de charge Enedis</p>
+                <div class="cma-title-line"></div>
+                <p>Analyse automatisée des courbes de charge Enedis et génération
+                d'indicateurs d'aide au diagnostic énergétique.</p>
             </div>
             {logo_html}
         </div>
@@ -660,10 +911,13 @@ render_header()
 st.markdown(
     """
     <div class="intro-card">
-        <strong>Fonctionnement :</strong> importez un export Enedis pour générer
-        automatiquement les consommations journalières, les profils horaires,
-        les tableaux colorés et les indicateurs utiles au pré-diagnostic
-        photovoltaïque.
+        <div class="intro-icon">⚡</div>
+        <div>
+            <strong>Analysez votre fichier Enedis en quelques secondes.</strong><br>
+            L'application transforme automatiquement les courbes de charge en
+            profils horaires, consommations journalières, tableaux thermiques
+            et indicateurs utiles au pré-diagnostic photovoltaïque.
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -684,16 +938,28 @@ with st.sidebar:
     )
 
 if uploaded_file is None:
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.info("📂 Importez un fichier CSV ou Excel Enedis.")
-
-    with col2:
-        st.info("📊 L'application calcule les profils et consommations.")
-
-    with col3:
-        st.info("📥 Exportez les résultats dans un classeur Excel.")
+    st.markdown(
+        """
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">📂</div>
+                <h3>1. Importer</h3>
+                <p>Déposez un export Enedis au format CSV ou Excel depuis le panneau latéral.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h3>2. Analyser</h3>
+                <p>Obtenez automatiquement les profils de charge, consommations et contrôles qualité.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📥</div>
+                <h3>3. Exporter</h3>
+                <p>Téléchargez un classeur Excel structuré, prêt à être exploité dans le diagnostic.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.stop()
 
