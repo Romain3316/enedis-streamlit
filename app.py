@@ -1073,72 +1073,103 @@ def add_astronomical_solar_data(
     longitude: float,
 ) -> pd.DataFrame:
     """
-    Ajoute les heures astronomiques exactes de lever/coucher et la hauteur
-    solaire à chaque relevé Enedis.
+    Ajoute les informations solaires exactes pour chaque relevé.
+
+    Les horodatages Enedis correspondent à la fin d'un intervalle.
+    La position du soleil est donc calculée au milieu de chaque intervalle,
+    ce qui évite de classer toute une heure comme nocturne alors que le soleil
+    se lève ou se couche pendant cette heure.
     """
     result = df.copy()
+
     location = Location(
         latitude=latitude,
         longitude=longitude,
         tz="Europe/Paris",
     )
 
-    local_times = localize_paris(result["Horodate"])
-    solar_position = location.get_solarposition(local_times)
+    if "Duree_h" not in result.columns:
+        result["Duree_h"] = 1.0
 
-    result["Hauteur_soleil_deg"] = solar_position[
-        "apparent_elevation"
-    ].to_numpy()
-
-    unique_dates = pd.DatetimeIndex(
-        pd.to_datetime(result["Horodate"].dt.normalize().unique())
+    result["Horodate_milieu"] = (
+        result["Horodate"]
+        - pd.to_timedelta(result["Duree_h"] / 2, unit="h")
     )
-    local_midnights = unique_dates.tz_localize(
+
+    local_midpoints = localize_paris(result["Horodate_milieu"])
+    solar_position = location.get_solarposition(local_midpoints)
+
+    result["Hauteur_soleil_deg"] = pd.to_numeric(
+        solar_position["apparent_elevation"].to_numpy(),
+        errors="coerce",
+    )
+
+    # Le seuil astronomique classique du lever/coucher est proche de -0,833°,
+    # afin de tenir compte du rayon apparent du soleil et de la réfraction.
+    result["Soleil_leve"] = (
+        result["Hauteur_soleil_deg"].fillna(-90) >= -0.833
+    )
+
+    # Calcul des événements solaires pour chaque date locale.
+    result["Date_solaire"] = result["Horodate_milieu"].dt.normalize()
+    unique_dates = pd.DatetimeIndex(
+        result["Date_solaire"].dropna().drop_duplicates().sort_values()
+    )
+
+    local_noons = (
+        unique_dates
+        + pd.Timedelta(hours=12)
+    ).tz_localize(
         "Europe/Paris",
         ambiguous=True,
         nonexistent="shift_forward",
     )
 
     sun_events = location.get_sun_rise_set_transit(
-        local_midnights,
+        local_noons,
         method="spa",
     )
 
     sun_table = pd.DataFrame(
         {
             "Date_solaire": unique_dates,
-            "Lever_soleil": (
+            "Lever_soleil": pd.DatetimeIndex(
                 sun_events["sunrise"]
-                .dt.tz_convert("Europe/Paris")
-                .dt.tz_localize(None)
-                .to_numpy()
-            ),
-            "Coucher_soleil": (
+            )
+            .tz_convert("Europe/Paris")
+            .tz_localize(None),
+            "Coucher_soleil": pd.DatetimeIndex(
                 sun_events["sunset"]
-                .dt.tz_convert("Europe/Paris")
-                .dt.tz_localize(None)
-                .to_numpy()
-            ),
-            "Midi_solaire": (
+            )
+            .tz_convert("Europe/Paris")
+            .tz_localize(None),
+            "Midi_solaire": pd.DatetimeIndex(
                 sun_events["transit"]
-                .dt.tz_convert("Europe/Paris")
-                .dt.tz_localize(None)
-                .to_numpy()
-            ),
+            )
+            .tz_convert("Europe/Paris")
+            .tz_localize(None),
         }
     )
 
-    result["Date_solaire"] = result["Horodate"].dt.normalize()
     result = result.merge(
         sun_table,
         on="Date_solaire",
         how="left",
     )
 
-    result["Soleil_leve"] = (
-        (result["Horodate"] >= result["Lever_soleil"])
-        & (result["Horodate"] <= result["Coucher_soleil"])
-        & (result["Hauteur_soleil_deg"] > 0)
+    # Contrôle secondaire par comparaison directe aux événements.
+    result["Dans_intervalle_lever_coucher"] = (
+        result["Lever_soleil"].notna()
+        & result["Coucher_soleil"].notna()
+        & (result["Horodate_milieu"] >= result["Lever_soleil"])
+        & (result["Horodate_milieu"] <= result["Coucher_soleil"])
+    )
+
+    # Si les événements sont disponibles, ils doivent être cohérents avec
+    # l'élévation. La position solaire reste toutefois la référence principale.
+    result["Controle_solaire_coherent"] = (
+        result["Soleil_leve"]
+        == result["Dans_intervalle_lever_coucher"]
     )
 
     return result
@@ -2368,6 +2399,10 @@ solar_daily_df = pd.DataFrame()
 
 daylight_kwh = np.nan
 daylight_share = np.nan
+solar_rows_count = 0
+solar_day_rows_count = 0
+solar_event_rows_count = 0
+solar_coherence_rate = np.nan
 production_period_kwh = np.nan
 production_period_share = np.nan
 pvgis_production_kwh = np.nan
@@ -2392,6 +2427,19 @@ if solar_analysis_available:
             daylight_kwh / total_kwh * 100
             if total_kwh
             else 0
+        )
+
+        solar_rows_count = len(filtered_df)
+        solar_day_rows_count = int(
+            filtered_df["Soleil_leve"].sum()
+        )
+        solar_event_rows_count = int(
+            filtered_df["Lever_soleil"].notna().sum()
+        )
+        solar_coherence_rate = (
+            filtered_df["Controle_solaire_coherent"].mean() * 100
+            if solar_rows_count
+            else np.nan
         )
 
         try:
@@ -2737,6 +2785,16 @@ with tab_solar:
         if solar_error:
             st.warning(solar_error)
 
+        if not pd.isna(daylight_share) and (
+            daylight_share < 5 or daylight_share > 95
+        ):
+            st.warning(
+                "⚠️ La part de consommation pendant le jour paraît "
+                "inhabituelle. Consultez le diagnostic solaire ci-dessous "
+                "pour vérifier les horodatages, les coordonnées et les "
+                "heures de lever/coucher."
+            )
+
         first_date_row = (
             filtered_df.sort_values("Horodate")
             .dropna(subset=["Lever_soleil", "Coucher_soleil"])
@@ -2890,6 +2948,80 @@ with tab_solar:
                 fig_irradiation,
                 use_container_width=True,
             )
+
+        st.subheader("Diagnostic du calcul solaire")
+
+        d1, d2, d3, d4 = st.columns(4)
+
+        d1.metric(
+            "Relevés analysés",
+            solar_rows_count,
+        )
+        d2.metric(
+            "Relevés classés en journée",
+            solar_day_rows_count,
+        )
+        d3.metric(
+            "Relevés avec lever/coucher",
+            solar_event_rows_count,
+        )
+        d4.metric(
+            "Cohérence des 2 méthodes",
+            (
+                f"{format_fr(solar_coherence_rate, 1)} %"
+                if not pd.isna(solar_coherence_rate)
+                else "N/D"
+            ),
+        )
+
+        diagnostic_columns = [
+            "Horodate",
+            "Horodate_milieu",
+            "Hauteur_soleil_deg",
+            "Lever_soleil",
+            "Coucher_soleil",
+            "Soleil_leve",
+            "Dans_intervalle_lever_coucher",
+            "Controle_solaire_coherent",
+            "Energie_kWh",
+        ]
+
+        diagnostic_table = filtered_df[
+            [
+                column
+                for column in diagnostic_columns
+                if column in filtered_df.columns
+            ]
+        ].head(48).copy()
+
+        for datetime_column in [
+            "Horodate",
+            "Horodate_milieu",
+            "Lever_soleil",
+            "Coucher_soleil",
+        ]:
+            if datetime_column in diagnostic_table.columns:
+                diagnostic_table[datetime_column] = (
+                    pd.to_datetime(
+                        diagnostic_table[datetime_column],
+                        errors="coerce",
+                    )
+                    .dt.strftime("%d/%m/%Y %H:%M")
+                )
+
+        st.dataframe(
+            diagnostic_table,
+            use_container_width=True,
+            height=520,
+        )
+
+        st.caption(
+            "La colonne « Horodate_milieu » correspond au milieu de "
+            "l'intervalle de consommation. La journée est déterminée "
+            "principalement à partir de la hauteur apparente du soleil. "
+            "La comparaison avec les heures de lever et coucher sert de "
+            "contrôle indépendant."
+        )
 
         st.subheader("Lever et coucher du soleil par jour")
 
