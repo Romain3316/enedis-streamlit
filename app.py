@@ -413,6 +413,92 @@ st.markdown(
             color: var(--cma-blue);
         }
 
+
+        .score-card {
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            gap: 24px;
+            align-items: center;
+            padding: 24px 26px;
+            margin: 16px 0 22px;
+            background: linear-gradient(135deg, #FFFFFF 0%, #F4F7FA 100%);
+            border: 1px solid #DDE4EB;
+            border-left: 7px solid var(--score-color, #17365D);
+            border-radius: 18px;
+            box-shadow: 0 10px 26px rgba(23, 54, 93, 0.09);
+        }
+
+        .score-circle {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 150px;
+            height: 150px;
+            margin: auto;
+            border: 12px solid var(--score-color, #17365D);
+            border-radius: 50%;
+            background: #FFFFFF;
+            box-shadow: inset 0 0 0 5px #F1F4F7;
+        }
+
+        .score-number {
+            color: var(--score-color, #17365D);
+            font-size: 2.55rem;
+            line-height: 1;
+            font-weight: 900;
+        }
+
+        .score-total {
+            margin-top: 4px;
+            color: #6B7688;
+            font-size: 0.88rem;
+            font-weight: 700;
+        }
+
+        .score-title {
+            margin: 0 0 8px;
+            color: var(--score-color, #17365D);
+            font-size: 1.45rem;
+            font-weight: 900;
+        }
+
+        .score-text {
+            margin: 0;
+            color: #3F4A5A;
+            line-height: 1.58;
+        }
+
+        .pedagogy-card {
+            padding: 17px 18px;
+            margin: 10px 0 18px;
+            background: #F7F9FB;
+            border: 1px solid #E0E6EC;
+            border-radius: 14px;
+        }
+
+        .pedagogy-card strong {
+            color: #17365D;
+        }
+
+        .status-pill {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            color: white;
+            font-size: 0.78rem;
+            font-weight: 800;
+        }
+
+        .score-breakdown {
+            padding: 17px 19px;
+            margin: 12px 0 20px;
+            background: #FFFFFF;
+            border: 1px solid #E1E7ED;
+            border-radius: 14px;
+        }
+
         @media (max-width: 1050px) {
             .cma-header {
                 gap: 28px;
@@ -1381,6 +1467,167 @@ def build_daily_solar_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
+
+def clamp_score(value: float) -> float:
+    if pd.isna(value):
+        return 0.0
+    return float(max(0.0, min(100.0, value)))
+
+
+def score_linear(value: float, low: float, high: float) -> float:
+    """Transforme une valeur en score 0-100 entre deux bornes."""
+    if pd.isna(value) or high <= low:
+        return 0.0
+    return clamp_score((value - low) / (high - low) * 100)
+
+
+def score_status(score: float) -> tuple[str, str]:
+    if score >= 80:
+        return "Très favorable", "#2E8B57"
+    if score >= 65:
+        return "Favorable", "#69A84F"
+    if score >= 45:
+        return "À approfondir", "#E0A800"
+    if score >= 25:
+        return "Vigilance", "#E67E22"
+    return "Peu favorable", "#C0392B"
+
+
+def metric_status(value: float, thresholds: list[tuple[float, str, str]]) -> tuple[str, str]:
+    """Retourne le premier statut dont le seuil minimal est atteint."""
+    if pd.isna(value):
+        return "Non disponible", "#7B8794"
+    for minimum, label, color in thresholds:
+        if value >= minimum:
+            return label, color
+    return "À contrôler", "#C0392B"
+
+
+def calculate_cma_pv_score(
+    production_period_share: float,
+    self_consumption_rate: float,
+    self_sufficiency_rate: float,
+    daily_consumption: pd.Series,
+    annual_yield_kwh_per_kwp: float,
+) -> dict:
+    """
+    Indice pédagogique CMA sur 100.
+
+    Pondérations :
+    - 30 % correspondance consommation / production PV ;
+    - 25 % taux d'autoconsommation ;
+    - 20 % taux d'autoproduction ;
+    - 15 % régularité de la consommation journalière ;
+    - 10 % potentiel solaire local.
+    """
+    overlap_score = score_linear(production_period_share, 20, 80)
+    self_consumption_score = score_linear(self_consumption_rate, 45, 95)
+    self_sufficiency_score = score_linear(self_sufficiency_rate, 5, 45)
+
+    daily_clean = pd.to_numeric(daily_consumption, errors="coerce").dropna()
+    if daily_clean.empty or daily_clean.mean() <= 0:
+        regularity_score = 0.0
+        coefficient_variation = np.nan
+    else:
+        coefficient_variation = daily_clean.std(ddof=0) / daily_clean.mean()
+        # CV 0,10 = très régulier ; CV 1,00 = très irrégulier.
+        regularity_score = clamp_score(
+            (1 - (coefficient_variation - 0.10) / 0.90) * 100
+        )
+
+    # Repères volontairement larges pour la France métropolitaine.
+    solar_resource_score = score_linear(
+        annual_yield_kwh_per_kwp,
+        800,
+        1400,
+    )
+
+    weighted_score = (
+        overlap_score * 0.30
+        + self_consumption_score * 0.25
+        + self_sufficiency_score * 0.20
+        + regularity_score * 0.15
+        + solar_resource_score * 0.10
+    )
+
+    label, color = score_status(weighted_score)
+
+    return {
+        "score": round(weighted_score, 1),
+        "label": label,
+        "color": color,
+        "overlap_score": round(overlap_score, 1),
+        "self_consumption_score": round(self_consumption_score, 1),
+        "self_sufficiency_score": round(self_sufficiency_score, 1),
+        "regularity_score": round(regularity_score, 1),
+        "solar_resource_score": round(solar_resource_score, 1),
+        "coefficient_variation": coefficient_variation,
+    }
+
+
+def build_cma_score_comment(score_data: dict) -> str:
+    score = score_data["score"]
+
+    if score >= 80:
+        return (
+            "Le profil présente une très bonne correspondance entre les usages "
+            "électriques et la production solaire simulée. Le projet paraît "
+            "particulièrement intéressant à approfondir."
+        )
+    if score >= 65:
+        return (
+            "Le profil est globalement favorable au photovoltaïque. Une étude "
+            "technique et économique permettra de confirmer la puissance la "
+            "plus pertinente."
+        )
+    if score >= 45:
+        return (
+            "Le potentiel est réel mais plusieurs paramètres doivent être "
+            "approfondis, notamment la puissance installée, les horaires de "
+            "consommation et la gestion du surplus."
+        )
+    if score >= 25:
+        return (
+            "La correspondance entre les besoins et la production solaire "
+            "reste limitée. Un scénario plus modeste ou une adaptation des "
+            "usages peut améliorer le projet."
+        )
+    return (
+        "Le profil paraît peu favorable dans le scénario actuellement étudié. "
+        "Cela ne signifie pas que le photovoltaïque est impossible, mais qu'un "
+        "dimensionnement différent doit être envisagé."
+    )
+
+
+def render_status_pill(label: str, color: str) -> str:
+    return (
+        f'<span class="status-pill" style="background:{color};">'
+        f'{label}</span>'
+    )
+
+
+def render_score_card(score_data: dict) -> None:
+    comment = build_cma_score_comment(score_data)
+    st.markdown(
+        f"""
+        <div class="score-card" style="--score-color:{score_data['color']};">
+            <div class="score-circle">
+                <div class="score-number">{score_data['score']:.0f}</div>
+                <div class="score-total">sur 100</div>
+            </div>
+            <div>
+                <div class="score-title">
+                    Indice photovoltaïque CMA — {score_data['label']}
+                </div>
+                <p class="score-text">{comment}</p>
+                {render_status_pill(score_data['label'], score_data['color'])}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def safe_pdf_text(value) -> str:
     if value is None:
         return ""
@@ -1511,6 +1758,8 @@ def create_cma_pdf_report(
     self_consumed_kwh: float,
     self_consumption_rate: float,
     self_sufficiency_rate: float,
+    cma_score_data: dict,
+    annual_yield_kwh_per_kwp: float,
     monthly_df: pd.DataFrame,
     weekday_hour_matrix: pd.DataFrame,
     hourly_df: pd.DataFrame,
@@ -1710,6 +1959,40 @@ def create_cma_pdf_report(
     # Synthèse
     story.append(Paragraph("1. Synthèse de l'analyse", styles["CMA_H1"]))
 
+    score_color = colors.HexColor(cma_score_data.get("color", "#17365D"))
+    score_table = Table(
+        [
+            [
+                Paragraph(
+                    f"<b>{cma_score_data.get('score', 0):.0f}/100</b>",
+                    styles["CMA_KPI_Value"],
+                ),
+                Paragraph(
+                    f"<b>Indice photovoltaïque CMA — "
+                    f"{safe_pdf_text(cma_score_data.get('label', 'Non calculé'))}</b><br/>"
+                    f"{safe_pdf_text(build_cma_score_comment(cma_score_data))}",
+                    styles["CMA_Body"],
+                ),
+            ]
+        ],
+        colWidths=[3.3 * cm, 12.5 * cm],
+    )
+    score_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor("#F3F6F9")),
+                ("BOX", (0, 0), (-1, -1), 1.2, score_color),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ]
+        )
+    )
+    story.append(score_table)
+    story.append(Spacer(1, 0.4 * cm))
+
     kpi_data = [
         [
             Paragraph(f"{format_fr(total_kwh, 0)} kWh", styles["CMA_KPI_Value"]),
@@ -1771,6 +2054,42 @@ def create_cma_pdf_report(
     story.append(Paragraph(comments["profile"], styles["CMA_Body"]))
     story.append(Paragraph(comments["self_consumption"], styles["CMA_Body"]))
     story.append(Paragraph(comments["self_sufficiency"], styles["CMA_Body"]))
+
+    score_detail_rows = [
+        ["Critère", "Poids", "Score"],
+        ["Correspondance usages / production", "30 %", f"{cma_score_data.get('overlap_score', 0):.0f}/100"],
+        ["Autoconsommation", "25 %", f"{cma_score_data.get('self_consumption_score', 0):.0f}/100"],
+        ["Autoproduction", "20 %", f"{cma_score_data.get('self_sufficiency_score', 0):.0f}/100"],
+        ["Régularité de la consommation", "15 %", f"{cma_score_data.get('regularity_score', 0):.0f}/100"],
+        ["Potentiel solaire local", "10 %", f"{cma_score_data.get('solar_resource_score', 0):.0f}/100"],
+    ]
+    score_detail_table = Table(
+        score_detail_rows,
+        colWidths=[9.6 * cm, 2.5 * cm, 3.7 * cm],
+    )
+    score_detail_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(score_detail_table)
+    story.append(
+        Paragraph(
+            "L'indice CMA est un outil pédagogique d'aide à la lecture. "
+            "Il ne remplace ni l'étude technique, ni l'analyse économique.",
+            styles["CMA_Small"],
+        )
+    )
+    story.append(Spacer(1, 0.3 * cm))
 
     # Graphique mensuel
     fig_monthly_pdf = px.bar(
@@ -1876,6 +2195,7 @@ def create_cma_pdf_report(
         ["Inclinaison", f"{pv_tilt:g}°"],
         ["Pertes prises en compte", f"{pv_losses:g} %"],
         ["Production PV estimée", f"{format_fr(pvgis_production_kwh, 0)} kWh" if not pd.isna(pvgis_production_kwh) else "Non disponible"],
+        ["Productible estimé", f"{format_fr(annual_yield_kwh_per_kwp, 0)} kWh/kWc" if not pd.isna(annual_yield_kwh_per_kwp) else "Non disponible"],
         ["Énergie autoconsommée estimée", f"{format_fr(self_consumed_kwh, 0)} kWh" if not pd.isna(self_consumed_kwh) else "Non disponible"],
     ]
     solar_table = Table(solar_info, colWidths=[5.2 * cm, 10.6 * cm])
@@ -2407,8 +2727,22 @@ production_period_kwh = np.nan
 production_period_share = np.nan
 pvgis_production_kwh = np.nan
 self_consumed_kwh = np.nan
+pv_surplus_kwh = np.nan
+grid_import_kwh = np.nan
 self_consumption_rate = np.nan
 self_sufficiency_rate = np.nan
+annual_yield_kwh_per_kwp = np.nan
+cma_score_data = {
+    "score": 0.0,
+    "label": "Non calculé",
+    "color": "#7B8794",
+    "overlap_score": 0.0,
+    "self_consumption_score": 0.0,
+    "self_sufficiency_score": 0.0,
+    "regularity_score": 0.0,
+    "solar_resource_score": 0.0,
+    "coefficient_variation": np.nan,
+}
 
 if solar_analysis_available:
     try:
@@ -2493,6 +2827,30 @@ if solar_analysis_available:
                 self_consumed_kwh / total_kwh * 100
                 if total_kwh
                 else 0
+            )
+
+            pv_surplus_kwh = max(
+                pvgis_production_kwh - self_consumed_kwh,
+                0,
+            )
+
+            grid_import_kwh = max(
+                total_kwh - self_consumed_kwh,
+                0,
+            )
+
+            annual_yield_kwh_per_kwp = (
+                pvgis_production_kwh / pv_peak_kwp
+                if pv_peak_kwp
+                else np.nan
+            )
+
+            cma_score_data = calculate_cma_pv_score(
+                production_period_share=production_period_share,
+                self_consumption_rate=self_consumption_rate,
+                self_sufficiency_rate=self_sufficiency_rate,
+                daily_consumption=daily_df["Consommation_kWh"],
+                annual_yield_kwh_per_kwp=annual_yield_kwh_per_kwp,
             )
 
             solar_daily_df = build_daily_solar_summary(
@@ -2640,21 +2998,64 @@ st.caption(interpretation)
 # ============================================================
 
 with tab_dashboard:
+    if pvgis_available:
+        render_score_card(cma_score_data)
+
+        with st.expander(
+            "Comprendre le calcul de l'indice photovoltaïque CMA"
+        ):
+            st.markdown(
+                f"""
+                L'indice est un **repère pédagogique**, et non une note de
+                rentabilité ou une validation technique.
+
+                - **Correspondance usages / production PV — 30 %** :
+                  {cma_score_data['overlap_score']:.0f}/100
+                - **Autoconsommation — 25 %** :
+                  {cma_score_data['self_consumption_score']:.0f}/100
+                - **Autoproduction — 20 %** :
+                  {cma_score_data['self_sufficiency_score']:.0f}/100
+                - **Régularité de la consommation — 15 %** :
+                  {cma_score_data['regularity_score']:.0f}/100
+                - **Potentiel solaire local — 10 %** :
+                  {cma_score_data['solar_resource_score']:.0f}/100
+
+                Un score élevé indique qu'il est pertinent d'approfondir le
+                projet. Il ne garantit ni sa faisabilité technique, ni sa
+                rentabilité économique.
+                """
+            )
+
     metric1, metric2, metric3, metric4, metric5 = st.columns(5)
 
     metric1.metric(
         "Consommation totale",
         f"{format_fr(total_kwh, 0)} kWh",
+        help=(
+            "Énergie totale consommée sur la période sélectionnée. "
+            "Elle permet d'évaluer le volume global des besoins, mais ne "
+            "suffit pas à déterminer la puissance photovoltaïque adaptée."
+        ),
     )
 
     metric2.metric(
         "Moyenne journalière",
         f"{format_fr(average_daily_kwh, 1)} kWh",
+        help=(
+            "Consommation moyenne par journée analysée. Cet indicateur "
+            "donne un ordre de grandeur des besoins quotidiens, mais masque "
+            "les différences entre jours ouvrés, week-ends et saisons."
+        ),
     )
 
     metric3.metric(
         "Pic de puissance",
         f"{format_fr(maximum_power_kw, 1)} kW",
+        help=(
+            "Puissance moyenne la plus élevée observée sur un intervalle. "
+            "Ce n'est pas la consommation annuelle : il s'agit du niveau "
+            "maximal de puissance appelé à un moment donné."
+        ),
     )
 
     metric4.metric(
@@ -2664,11 +3065,22 @@ with tab_dashboard:
             if solar_analysis_available
             else "Adresse requise"
         ),
+        help=(
+            "Part de la consommation ayant lieu lorsque le soleil est "
+            "au-dessus de l'horizon. C'est un premier repère, mais il ne "
+            "tient pas compte de l'intensité du soleil. L'indicateur "
+            "« consommation pendant la production PV » est plus précis."
+        ),
     )
 
     metric5.metric(
         "Facteur de charge",
         f"{format_fr(load_factor, 1)} %",
+        help=(
+            "Rapport entre la puissance moyenne et la puissance maximale. "
+            "Un facteur élevé traduit généralement une consommation plus "
+            "stable ; un facteur faible indique des pointes marquées."
+        ),
     )
 
     chart1, chart2 = st.columns([1.5, 1])
@@ -2737,6 +3149,68 @@ with tab_dashboard:
             use_container_width=True,
         )
 
+    if pvgis_available:
+        st.subheader("Bilan énergétique de la simulation photovoltaïque")
+
+        balance_data = pd.DataFrame(
+            {
+                "Flux": [
+                    "Énergie solaire autoconsommée",
+                    "Surplus photovoltaïque estimé",
+                    "Électricité restant achetée au réseau",
+                ],
+                "Energie_kWh": [
+                    self_consumed_kwh,
+                    pv_surplus_kwh,
+                    grid_import_kwh,
+                ],
+            }
+        )
+
+        fig_energy_balance = px.bar(
+            balance_data,
+            x="Flux",
+            y="Energie_kWh",
+            text_auto=".0f",
+            title=(
+                "Répartition annuelle des flux d'énergie "
+                "pour le scénario étudié"
+            ),
+            labels={
+                "Flux": "",
+                "Energie_kWh": "Énergie (kWh)",
+            },
+            color="Flux",
+            color_discrete_map={
+                "Énergie solaire autoconsommée": "#E53935",
+                "Surplus photovoltaïque estimé": "#F4A261",
+                "Électricité restant achetée au réseau": "#17365D",
+            },
+        )
+
+        fig_energy_balance.update_layout(
+            template="plotly_white",
+            showlegend=False,
+            hovermode="x unified",
+        )
+
+        fig_energy_balance.update_traces(
+            texttemplate="%{y:,.0f} kWh",
+            textposition="outside",
+            cliponaxis=False,
+        )
+
+        st.plotly_chart(
+            fig_energy_balance,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Ce graphique distingue l'électricité solaire consommée "
+            "directement sur place, le surplus potentiel et la part des "
+            "besoins qui resterait fournie par le réseau."
+        )
+
     fig_global = px.line(
         hourly_df,
         x="Horodate",
@@ -2767,6 +3241,9 @@ with tab_dashboard:
 
 with tab_solar:
     st.subheader("Analyse solaire géolocalisée")
+
+    if pvgis_available:
+        render_score_card(cma_score_data)
 
     if not solar_analysis_available:
         st.info(
@@ -2811,18 +3288,38 @@ with tab_solar:
         s1.metric(
             "Lever au début de période",
             first_date_row["Lever_soleil"].strftime("%H:%M"),
+            help=(
+                "Heure astronomique du lever du soleil au premier jour "
+                "analysé. La production photovoltaïque débute généralement "
+                "progressivement après cette heure."
+            ),
         )
         s2.metric(
             "Coucher au début de période",
             first_date_row["Coucher_soleil"].strftime("%H:%M"),
+            help=(
+                "Heure astronomique du coucher du soleil au premier jour "
+                "analysé. La production devient très faible avant d'atteindre "
+                "cette heure."
+            ),
         )
         s3.metric(
             "Lever en fin de période",
             last_date_row["Lever_soleil"].strftime("%H:%M"),
+            help=(
+                "Heure du lever du soleil au dernier jour analysé. La "
+                "différence avec le début de période illustre la variation "
+                "saisonnière de la durée du jour."
+            ),
         )
         s4.metric(
             "Coucher en fin de période",
             last_date_row["Coucher_soleil"].strftime("%H:%M"),
+            help=(
+                "Heure du coucher du soleil au dernier jour analysé. Elle "
+                "permet de visualiser l'allongement ou le raccourcissement "
+                "des journées sur la période."
+            ),
         )
 
         k1, k2, k3, k4 = st.columns(4)
@@ -2831,6 +3328,12 @@ with tab_solar:
             "Consommation pendant le jour",
             f"{format_fr(daylight_kwh, 0)} kWh",
             f"{format_fr(daylight_share, 1)} %",
+            help=(
+                "Énergie consommée lorsque le soleil est au-dessus de "
+                "l'horizon. Une part élevée est généralement favorable, "
+                "mais cet indicateur ne tient pas compte de l'intensité du "
+                "rayonnement solaire."
+            ),
         )
 
         k2.metric(
@@ -2845,6 +3348,12 @@ with tab_solar:
                 if pvgis_available
                 else None
             ),
+            help=(
+                "Consommation observée uniquement pendant les intervalles "
+                "où l'installation simulée produit effectivement de "
+                "l'électricité. Cet indicateur tient compte de la variation "
+                "horaire du rayonnement estimé par PVGIS."
+            ),
         )
 
         k3.metric(
@@ -2853,6 +3362,12 @@ with tab_solar:
                 f"{format_fr(pvgis_production_kwh, 0)} kWh"
                 if pvgis_available
                 else "PVGIS indisponible"
+            ),
+            help=(
+                "Énergie photovoltaïque que produirait le scénario étudié "
+                "sur la période, selon PVGIS. Le calcul tient compte de la "
+                "localisation, de la puissance, de l'orientation, de "
+                "l'inclinaison et des pertes renseignées."
             ),
         )
 
@@ -2863,21 +3378,85 @@ with tab_solar:
                 if pvgis_available
                 else "PVGIS indisponible"
             ),
+            help=(
+                "Part de la consommation de l'entreprise couverte par "
+                "l'électricité solaire autoconsommée. Par exemple, 25 % "
+                "signifie qu'environ un quart des besoins serait produit "
+                "et consommé sur place."
+            ),
         )
 
         if pvgis_available:
+            overlap_label, overlap_color = metric_status(
+                production_period_share,
+                [
+                    (70, "Très bonne correspondance horaire", "#2E8B57"),
+                    (50, "Correspondance favorable", "#69A84F"),
+                    (30, "Correspondance partielle", "#E0A800"),
+                    (0, "Correspondance limitée", "#C0392B"),
+                ],
+            )
+            autocons_label, autocons_color = metric_status(
+                self_consumption_rate,
+                [
+                    (85, "Très forte valorisation sur place", "#2E8B57"),
+                    (70, "Bonne valorisation sur place", "#69A84F"),
+                    (50, "Valorisation moyenne", "#E0A800"),
+                    (0, "Surplus potentiellement important", "#E67E22"),
+                ],
+            )
+            autoprod_label, autoprod_color = metric_status(
+                self_sufficiency_rate,
+                [
+                    (40, "Couverture importante des besoins", "#2E8B57"),
+                    (25, "Couverture significative", "#69A84F"),
+                    (15, "Couverture modérée", "#E0A800"),
+                    (0, "Couverture limitée", "#E67E22"),
+                ],
+            )
+
+            st.markdown(
+                f"""
+                <div class="pedagogy-card">
+                    <strong>Lecture pédagogique des résultats</strong><br>
+                    {render_status_pill(overlap_label, overlap_color)}
+                    {render_status_pill(autocons_label, autocons_color)}
+                    {render_status_pill(autoprod_label, autoprod_color)}
+                    <br><br>
+                    Le <strong>taux d'autoconsommation</strong> indique ce que
+                    l'entreprise utilise de sa production solaire. Le
+                    <strong>taux d'autoproduction</strong> indique la part de
+                    ses besoins couverte par cette production. Ces deux taux
+                    répondent donc à des questions différentes.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
             a1, a2 = st.columns(2)
 
             with a1:
                 st.metric(
                     "Énergie PV autoconsommée estimée",
                     f"{format_fr(self_consumed_kwh, 0)} kWh",
+                    help=(
+                        "Quantité d'électricité solaire utilisée directement "
+                        "par le bâtiment. C'est cette énergie qui évite un "
+                        "achat équivalent auprès du fournisseur, sous réserve "
+                        "des tarifs et conditions du contrat."
+                    ),
                 )
 
             with a2:
                 st.metric(
                     "Taux d'autoconsommation estimé",
                     f"{format_fr(self_consumption_rate, 1)} %",
+                    help=(
+                        "Part de la production photovoltaïque consommée "
+                        "immédiatement sur place. Un taux élevé limite le "
+                        "surplus, mais ne signifie pas forcément que les "
+                        "panneaux couvrent une grande part des besoins."
+                    ),
                 )
 
             solar_plot = filtered_df[
@@ -2947,6 +3526,73 @@ with tab_solar:
             st.plotly_chart(
                 fig_irradiation,
                 use_container_width=True,
+            )
+
+            st.subheader("Bilan des flux d'énergie")
+
+            solar_balance_data = pd.DataFrame(
+                {
+                    "Flux": [
+                        "Solaire autoconsommé",
+                        "Surplus photovoltaïque",
+                        "Achat au réseau",
+                    ],
+                    "Energie_kWh": [
+                        self_consumed_kwh,
+                        pv_surplus_kwh,
+                        grid_import_kwh,
+                    ],
+                }
+            )
+
+            fig_solar_balance = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=solar_balance_data["Flux"],
+                        values=solar_balance_data["Energie_kWh"],
+                        hole=0.55,
+                        marker=dict(
+                            colors=[
+                                CMA_RED,
+                                "#F4A261",
+                                CMA_BLUE,
+                            ]
+                        ),
+                        textinfo="label+percent",
+                        hovertemplate=(
+                            "%{label}<br>"
+                            "%{value:,.0f} kWh"
+                            "<extra></extra>"
+                        ),
+                    )
+                ]
+            )
+
+            fig_solar_balance.update_layout(
+                title=(
+                    "Autoconsommation, surplus et électricité "
+                    "achetée au réseau"
+                ),
+                template="plotly_white",
+                showlegend=False,
+            )
+
+            st.plotly_chart(
+                fig_solar_balance,
+                use_container_width=True,
+            )
+
+            st.markdown(
+                f"""
+                **Lecture simple :**
+
+                - **{format_fr(self_consumed_kwh, 0)} kWh** de production
+                  solaire pourraient être consommés directement ;
+                - **{format_fr(pv_surplus_kwh, 0)} kWh** constitueraient un
+                  surplus potentiel ;
+                - **{format_fr(grid_import_kwh, 0)} kWh** resteraient à
+                  acheter au réseau.
+                """
             )
 
         st.subheader("Diagnostic du calcul solaire")
@@ -3450,8 +4096,19 @@ with tab_export:
                 "Part de consommation pendant la production PV (%)",
                 "Puissance photovoltaïque étudiée (kWc)",
                 "Production PVGIS estimée (kWh)",
+                "Énergie solaire autoconsommée estimée (kWh)",
+                "Surplus photovoltaïque estimé (kWh)",
+                "Électricité restant achetée au réseau (kWh)",
                 "Taux d'autoconsommation estimé (%)",
                 "Taux d'autoproduction estimé (%)",
+                "Indice photovoltaïque CMA (/100)",
+                "Appréciation de l'indice CMA",
+                "Score correspondance usages / production (/100)",
+                "Score autoconsommation (/100)",
+                "Score autoproduction (/100)",
+                "Score régularité des consommations (/100)",
+                "Score potentiel solaire local (/100)",
+                "Productible estimé (kWh/kWc)",
                 "Facteur de charge (%)",
                 "Horodatages en doublon",
                 "Jours atypiques",
@@ -3503,12 +4160,67 @@ with tab_export:
                     else ""
                 ),
                 (
+                    self_consumed_kwh
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    pv_surplus_kwh
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    grid_import_kwh
+                    if pvgis_available
+                    else ""
+                ),
+                (
                     self_consumption_rate
                     if pvgis_available
                     else ""
                 ),
                 (
                     self_sufficiency_rate
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["label"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["overlap_score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["self_consumption_score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["self_sufficiency_score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["regularity_score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    cma_score_data["solar_resource_score"]
+                    if pvgis_available
+                    else ""
+                ),
+                (
+                    annual_yield_kwh_per_kwp
                     if pvgis_available
                     else ""
                 ),
@@ -3711,6 +4423,8 @@ with tab_export:
                 self_consumed_kwh=self_consumed_kwh,
                 self_consumption_rate=self_consumption_rate,
                 self_sufficiency_rate=self_sufficiency_rate,
+                cma_score_data=cma_score_data,
+                annual_yield_kwh_per_kwp=annual_yield_kwh_per_kwp,
                 monthly_df=monthly_df,
                 weekday_hour_matrix=weekday_hour_matrix,
                 hourly_df=hourly_df,
