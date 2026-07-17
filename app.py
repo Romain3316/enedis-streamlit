@@ -1,4 +1,3 @@
-
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -1628,6 +1627,291 @@ def render_score_card(score_data: dict) -> None:
     )
 
 
+
+def time_to_minutes(value) -> int:
+    return int(value.hour) * 60 + int(value.minute)
+
+
+def minutes_in_time_range(
+    minute_of_day: int,
+    start_minute: int,
+    end_minute: int,
+) -> bool:
+    """
+    Vérifie si une minute appartient à une plage horaire.
+    Une plage dont la fin est antérieure au début traverse minuit.
+    Exemple : 22:00 -> 06:00.
+    """
+    if start_minute == end_minute:
+        return True
+    if start_minute < end_minute:
+        return start_minute <= minute_of_day < end_minute
+    return minute_of_day >= start_minute or minute_of_day < end_minute
+
+
+def add_tariff_categories(
+    df: pd.DataFrame,
+    hc_ranges: list[tuple],
+) -> pd.DataFrame:
+    """
+    Classe chaque intervalle Enedis selon :
+    - saison haute / hiver : 1er novembre au 31 mars ;
+    - saison basse / été : 1er avril au 31 octobre ;
+    - heures creuses selon les plages saisies ;
+    - heures pleines par complément.
+
+    Le classement utilise le milieu réel de l'intervalle.
+    """
+    result = df.copy()
+
+    if "Duree_h" not in result.columns:
+        result["Duree_h"] = 1.0
+
+    result["Horodate_tarif"] = (
+        result["Horodate"]
+        - pd.to_timedelta(result["Duree_h"] / 2, unit="h")
+    )
+
+    hc_ranges_minutes = [
+        (time_to_minutes(start), time_to_minutes(end))
+        for start, end in hc_ranges
+    ]
+
+    minute_of_day = (
+        result["Horodate_tarif"].dt.hour * 60
+        + result["Horodate_tarif"].dt.minute
+    )
+
+    hc_mask = pd.Series(False, index=result.index)
+
+    for start_minute, end_minute in hc_ranges_minutes:
+        if start_minute == end_minute:
+            hc_mask = pd.Series(True, index=result.index)
+        elif start_minute < end_minute:
+            hc_mask |= (
+                (minute_of_day >= start_minute)
+                & (minute_of_day < end_minute)
+            )
+        else:
+            hc_mask |= (
+                (minute_of_day >= start_minute)
+                | (minute_of_day < end_minute)
+            )
+
+    month = result["Horodate_tarif"].dt.month
+    winter_mask = month.isin([11, 12, 1, 2, 3])
+
+    result["Saison_tarifaire"] = np.where(
+        winter_mask,
+        "Hiver / saison haute",
+        "Été / saison basse",
+    )
+    result["Plage_tarifaire"] = np.where(
+        hc_mask,
+        "Heures creuses",
+        "Heures pleines",
+    )
+
+    result["Categorie_tarifaire"] = np.select(
+        [
+            winter_mask & ~hc_mask,
+            winter_mask & hc_mask,
+            ~winter_mask & ~hc_mask,
+            ~winter_mask & hc_mask,
+        ],
+        [
+            "HP hiver",
+            "HC hiver",
+            "HP été",
+            "HC été",
+        ],
+        default="Non classé",
+    )
+
+    return result
+
+
+def build_tariff_summary(df: pd.DataFrame) -> pd.DataFrame:
+    order = ["HP hiver", "HC hiver", "HP été", "HC été"]
+
+    summary = (
+        df.groupby("Categorie_tarifaire", as_index=False)
+        .agg(
+            Consommation_kWh=("Energie_kWh", "sum"),
+            Nombre_intervalles=("Energie_kWh", "size"),
+        )
+    )
+
+    summary = (
+        summary.set_index("Categorie_tarifaire")
+        .reindex(order, fill_value=0)
+        .reset_index()
+    )
+
+    total = summary["Consommation_kWh"].sum()
+    summary["Part_pourcent"] = np.where(
+        total > 0,
+        summary["Consommation_kWh"] / total * 100,
+        0,
+    )
+
+    return summary
+
+
+def calculate_tariff_optimization_score(
+    tariff_summary: pd.DataFrame,
+    daily_consumption: pd.Series,
+    coverage_ratio: float,
+) -> dict:
+    """
+    Indice de potentiel d'optimisation tarifaire.
+
+    Un score élevé ne signifie pas que le contrat est mauvais.
+    Il indique qu'une analyse plus poussée peut être utile.
+
+    Pondérations :
+    - 50 % : part consommée en heures pleines ;
+    - 25 % : déséquilibre saison haute / saison basse ;
+    - 15 % : régularité des consommations ;
+    - 10 % : qualité / complétude de la période analysée.
+    """
+    values = tariff_summary.set_index("Categorie_tarifaire")[
+        "Consommation_kWh"
+    ]
+
+    hp_total = float(
+        values.get("HP hiver", 0)
+        + values.get("HP été", 0)
+    )
+    hc_total = float(
+        values.get("HC hiver", 0)
+        + values.get("HC été", 0)
+    )
+    winter_total = float(
+        values.get("HP hiver", 0)
+        + values.get("HC hiver", 0)
+    )
+    summer_total = float(
+        values.get("HP été", 0)
+        + values.get("HC été", 0)
+    )
+    total = hp_total + hc_total
+
+    hp_share = hp_total / total * 100 if total else 0
+    hc_share = hc_total / total * 100 if total else 0
+
+    # Plus la part HP est forte, plus il existe potentiellement des usages
+    # à examiner pour un déplacement en HC.
+    hp_opportunity_score = score_linear(hp_share, 45, 90)
+
+    # Comparaison corrigée par le nombre de mois des deux saisons.
+    winter_monthly_average = winter_total / 5
+    summer_monthly_average = summer_total / 7
+
+    if max(winter_monthly_average, summer_monthly_average) > 0:
+        seasonal_gap = (
+            abs(winter_monthly_average - summer_monthly_average)
+            / max(winter_monthly_average, summer_monthly_average)
+            * 100
+        )
+    else:
+        seasonal_gap = 0
+
+    seasonality_score = score_linear(seasonal_gap, 10, 70)
+
+    daily_clean = pd.to_numeric(
+        daily_consumption,
+        errors="coerce",
+    ).dropna()
+
+    if daily_clean.empty or daily_clean.mean() <= 0:
+        regularity_score = 0
+    else:
+        cv = daily_clean.std(ddof=0) / daily_clean.mean()
+        # Pour un potentiel d'optimisation, une forte variabilité crée plus
+        # de matière à analyser. Le score n'est pas un jugement de qualité.
+        regularity_score = score_linear(cv, 0.15, 0.90)
+
+    coverage_score = clamp_score(coverage_ratio * 100)
+
+    score = (
+        hp_opportunity_score * 0.50
+        + seasonality_score * 0.25
+        + regularity_score * 0.15
+        + coverage_score * 0.10
+    )
+
+    if score >= 75:
+        label = "Potentiel d'analyse élevé"
+        color = "#C0392B"
+    elif score >= 55:
+        label = "Potentiel d'analyse significatif"
+        color = "#E67E22"
+    elif score >= 35:
+        label = "Potentiel d'analyse modéré"
+        color = "#E0A800"
+    else:
+        label = "Potentiel d'analyse limité"
+        color = "#2E8B57"
+
+    return {
+        "score": round(score, 1),
+        "label": label,
+        "color": color,
+        "hp_share": round(hp_share, 1),
+        "hc_share": round(hc_share, 1),
+        "seasonal_gap": round(seasonal_gap, 1),
+        "hp_opportunity_score": round(hp_opportunity_score, 1),
+        "seasonality_score": round(seasonality_score, 1),
+        "variability_score": round(regularity_score, 1),
+        "coverage_score": round(coverage_score, 1),
+        "winter_total": winter_total,
+        "summer_total": summer_total,
+    }
+
+
+def build_tariff_commentary(score_data: dict) -> str:
+    hp_share = score_data["hp_share"]
+    seasonal_gap = score_data["seasonal_gap"]
+
+    if hp_share >= 75:
+        hp_text = (
+            "La consommation est très majoritairement située en heures "
+            "pleines. Il peut être utile d'identifier les usages décalables, "
+            "sans perturber l'activité."
+        )
+    elif hp_share >= 55:
+        hp_text = (
+            "La majorité de la consommation a lieu en heures pleines. "
+            "Certains usages non critiques peuvent éventuellement être "
+            "examinés pour un déplacement en heures creuses."
+        )
+    else:
+        hp_text = (
+            "Une part importante de la consommation est déjà réalisée en "
+            "heures creuses. Le potentiel de déplacement supplémentaire "
+            "semble plus limité."
+        )
+
+    if seasonal_gap >= 45:
+        season_text = (
+            "La consommation moyenne mensuelle diffère fortement entre les "
+            "saisons haute et basse. Il convient d'en rechercher les causes "
+            "possibles : chauffage, process, activité saisonnière ou occupation."
+        )
+    elif seasonal_gap >= 20:
+        season_text = (
+            "Une saisonnalité modérée est visible entre hiver et été. "
+            "Elle mérite d'être mise en regard des usages de l'entreprise."
+        )
+    else:
+        season_text = (
+            "La consommation est relativement homogène entre les deux saisons."
+        )
+
+    return hp_text + " " + season_text
+
+
 def safe_pdf_text(value) -> str:
     if value is None:
         return ""
@@ -1760,6 +2044,9 @@ def create_cma_pdf_report(
     self_sufficiency_rate: float,
     cma_score_data: dict,
     annual_yield_kwh_per_kwp: float,
+    tariff_summary_df: pd.DataFrame,
+    tariff_score_data: dict,
+    hc_ranges: list[tuple],
     monthly_df: pd.DataFrame,
     weekday_hour_matrix: pd.DataFrame,
     hourly_df: pd.DataFrame,
@@ -2259,8 +2546,87 @@ def create_cma_pdf_report(
 
     story.append(PageBreak())
 
+    # Analyse tarifaire
+    story.append(Paragraph("4. Analyse tarifaire HP / HC", styles["CMA_H1"]))
+    story.append(
+        Paragraph(
+            "Cette analyse répartit les consommations selon les plages "
+            "d'heures creuses renseignées et selon les saisons tarifaires : "
+            "hiver du 1er novembre au 31 mars, été du 1er avril au 31 octobre.",
+            styles["CMA_Body"],
+        )
+    )
+
+    hc_labels = [
+        f"{start.strftime('%H:%M')} - {end.strftime('%H:%M')}"
+        for start, end in hc_ranges
+    ]
+    story.append(
+        Paragraph(
+            "<b>Plages d'heures creuses utilisées :</b> "
+            + ", ".join(hc_labels),
+            styles["CMA_Body"],
+        )
+    )
+
+    tariff_pdf_rows = [["Catégorie", "Consommation", "Part"]]
+    for _, row in tariff_summary_df.iterrows():
+        tariff_pdf_rows.append(
+            [
+                str(row["Categorie_tarifaire"]),
+                f"{format_fr(row['Consommation_kWh'], 0)} kWh",
+                f"{format_fr(row['Part_pourcent'], 1)} %",
+            ]
+        )
+
+    tariff_pdf_table = Table(
+        tariff_pdf_rows,
+        colWidths=[7.5 * cm, 4.2 * cm, 4.1 * cm],
+    )
+    tariff_pdf_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.append(tariff_pdf_table)
+    story.append(Spacer(1, 0.35 * cm))
+
+    story.append(
+        Paragraph(
+            f"<b>Indice de potentiel d'optimisation tarifaire CMA : "
+            f"{tariff_score_data['score']:.0f}/100 — "
+            f"{safe_pdf_text(tariff_score_data['label'])}</b>",
+            styles["CMA_H2"],
+        )
+    )
+    story.append(
+        Paragraph(
+            safe_pdf_text(build_tariff_commentary(tariff_score_data)),
+            styles["CMA_Body"],
+        )
+    )
+    story.append(
+        Paragraph(
+            "Cet indice signale un potentiel d'analyse. Il ne compare pas "
+            "les prix des fournisseurs et ne prouve pas qu'un changement "
+            "d'option tarifaire serait rentable.",
+            styles["CMA_Small"],
+        )
+    )
+
+    story.append(PageBreak())
+
     # Explications
-    story.append(Paragraph("4. Comment lire les résultats ?", styles["CMA_H1"]))
+    story.append(Paragraph("5. Comment lire les résultats ?", styles["CMA_H1"]))
     explanations = [
         (
             "Autoconsommation",
@@ -2288,7 +2654,7 @@ def create_cma_pdf_report(
         story.append(Paragraph(title, styles["CMA_H2"]))
         story.append(Paragraph(text, styles["CMA_Body"]))
 
-    story.append(Paragraph("5. Recommandations", styles["CMA_H1"]))
+    story.append(Paragraph("6. Recommandations", styles["CMA_H1"]))
     recommendations = [
         "Vérifier la surface réellement disponible et les zones d'ombrage.",
         "Faire contrôler l'état et la capacité portante de la toiture.",
@@ -2302,7 +2668,7 @@ def create_cma_pdf_report(
     ]
     story.append(Table(recommendation_rows, colWidths=[15.8 * cm]))
 
-    story.append(Paragraph("6. Limites du pré-diagnostic", styles["CMA_H1"]))
+    story.append(Paragraph("7. Limites du pré-diagnostic", styles["CMA_H1"]))
     story.append(
         Paragraph(
             "Ce rapport repose sur les données Enedis importées et sur une "
@@ -2342,6 +2708,8 @@ def make_excel_export(
     daily_data: pd.DataFrame,
     monthly_data: pd.DataFrame,
     weekday_hour_matrix: pd.DataFrame,
+    tariff_summary: pd.DataFrame,
+    tariff_detail: pd.DataFrame,
     summary: pd.DataFrame,
 ) -> bytes:
     output = BytesIO()
@@ -2367,6 +2735,16 @@ def make_excel_export(
         weekday_hour_matrix.to_excel(
             writer,
             sheet_name="Moyenne heure-jour",
+        )
+        tariff_summary.to_excel(
+            writer,
+            index=False,
+            sheet_name="Répartition tarifaire",
+        )
+        tariff_detail.to_excel(
+            writer,
+            index=False,
+            sheet_name="Détail tarifaire",
         )
 
         workbook = writer.book
@@ -2683,6 +3061,63 @@ with st.sidebar:
         "caractéristiques de l'installation."
     )
 
+    st.markdown("---")
+    st.markdown("## 6. Paramètres tarifaires")
+
+    hc_range_count = st.radio(
+        "Nombre de plages d'heures creuses par jour",
+        [1, 2],
+        horizontal=True,
+        help=(
+            "Renseignez uniquement les plages d'heures creuses. "
+            "Toutes les autres heures seront automatiquement classées "
+            "en heures pleines."
+        ),
+    )
+
+    hc1_col1, hc1_col2 = st.columns(2)
+
+    with hc1_col1:
+        hc1_start = st.time_input(
+            "Début HC 1",
+            value=pd.Timestamp("22:00").time(),
+            step=1800,
+        )
+
+    with hc1_col2:
+        hc1_end = st.time_input(
+            "Fin HC 1",
+            value=pd.Timestamp("06:00").time(),
+            step=1800,
+        )
+
+    hc_ranges = [(hc1_start, hc1_end)]
+
+    if hc_range_count == 2:
+        hc2_col1, hc2_col2 = st.columns(2)
+
+        with hc2_col1:
+            hc2_start = st.time_input(
+                "Début HC 2",
+                value=pd.Timestamp("12:30").time(),
+                step=1800,
+            )
+
+        with hc2_col2:
+            hc2_end = st.time_input(
+                "Fin HC 2",
+                value=pd.Timestamp("14:30").time(),
+                step=1800,
+            )
+
+        hc_ranges.append((hc2_start, hc2_end))
+
+    st.caption(
+        "Hiver / saison haute : du 1er novembre au 31 mars. "
+        "Été / saison basse : du 1er avril au 31 octobre. "
+        "Le milieu de chaque intervalle Enedis est utilisé pour le classement."
+    )
+
 
 filtered_df = filter_period(
     enriched_df,
@@ -2705,6 +3140,35 @@ hourly_df = build_hourly_data(filtered_df)
 daily_df = build_daily_data(filtered_df)
 monthly_df = build_monthly_data(filtered_df)
 weekday_hour_matrix = build_weekday_hour_matrix(hourly_df)
+
+filtered_df = add_tariff_categories(
+    filtered_df,
+    hc_ranges,
+)
+tariff_summary_df = build_tariff_summary(filtered_df)
+
+analysis_start = filtered_df["Horodate"].min()
+analysis_end = filtered_df["Horodate"].max()
+analysis_days = max(
+    (analysis_end - analysis_start).total_seconds() / 86400,
+    1,
+)
+coverage_ratio = min(analysis_days / 365.25, 1.0)
+
+tariff_score_data = calculate_tariff_optimization_score(
+    tariff_summary=tariff_summary_df,
+    daily_consumption=daily_df["Consommation_kWh"],
+    coverage_ratio=coverage_ratio,
+)
+
+tariff_values = tariff_summary_df.set_index(
+    "Categorie_tarifaire"
+)["Consommation_kWh"]
+
+hp_winter_kwh = float(tariff_values.get("HP hiver", 0))
+hc_winter_kwh = float(tariff_values.get("HC hiver", 0))
+hp_summer_kwh = float(tariff_values.get("HP été", 0))
+hc_summer_kwh = float(tariff_values.get("HC été", 0))
 
 total_kwh = filtered_df["Energie_kWh"].sum()
 average_daily_kwh = daily_df["Consommation_kWh"].mean()
@@ -2977,6 +3441,7 @@ st.caption(interpretation)
 (
     tab_dashboard,
     tab_solar,
+    tab_tariff,
     tab_profiles,
     tab_daily,
     tab_quality,
@@ -2985,6 +3450,7 @@ st.caption(interpretation)
     [
         "📊 Tableau de bord",
         "☀️ Analyse solaire",
+        "⚡ Analyse tarifaire",
         "🕒 Profils horaires",
         "📅 Consommations journalières",
         "✅ Qualité des données",
@@ -3732,6 +4198,249 @@ with tab_solar:
 
 
 # ============================================================
+# ANALYSE TARIFAIRE
+# ============================================================
+
+with tab_tariff:
+    st.subheader("Analyse tarifaire HP / HC et saison haute / saison basse")
+
+    st.markdown(
+        f"""
+        <div class="score-card" style="--score-color:{tariff_score_data['color']};">
+            <div class="score-circle">
+                <div class="score-number">{tariff_score_data['score']:.0f}</div>
+                <div class="score-total">sur 100</div>
+            </div>
+            <div>
+                <div class="score-title">
+                    Indice de potentiel d'optimisation tarifaire CMA
+                </div>
+                <p class="score-text">
+                    {build_tariff_commentary(tariff_score_data)}
+                </p>
+                {render_status_pill(
+                    tariff_score_data['label'],
+                    tariff_score_data['color'],
+                )}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.warning(
+        "Cet indice mesure le potentiel d'analyse et non la qualité du contrat. "
+        "Un score élevé signifie qu'il existe davantage de points à approfondir. "
+        "Il ne permet pas, à lui seul, de conclure qu'une option tarifaire est "
+        "plus économique."
+    )
+
+    t1, t2, t3, t4 = st.columns(4)
+
+    t1.metric(
+        "HP hiver",
+        f"{format_fr(hp_winter_kwh, 0)} kWh",
+        help=(
+            "Consommation en heures pleines entre le 1er novembre et "
+            "le 31 mars, selon les plages d'heures creuses saisies."
+        ),
+    )
+    t2.metric(
+        "HC hiver",
+        f"{format_fr(hc_winter_kwh, 0)} kWh",
+        help=(
+            "Consommation en heures creuses entre le 1er novembre et "
+            "le 31 mars."
+        ),
+    )
+    t3.metric(
+        "HP été",
+        f"{format_fr(hp_summer_kwh, 0)} kWh",
+        help=(
+            "Consommation en heures pleines entre le 1er avril et "
+            "le 31 octobre."
+        ),
+    )
+    t4.metric(
+        "HC été",
+        f"{format_fr(hc_summer_kwh, 0)} kWh",
+        help=(
+            "Consommation en heures creuses entre le 1er avril et "
+            "le 31 octobre."
+        ),
+    )
+
+    if coverage_ratio < 0.95:
+        st.info(
+            f"La période analysée couvre environ "
+            f"{format_fr(coverage_ratio * 100, 1)} % d'une année. "
+            "Les résultats présentés sont ceux de la période disponible "
+            "et ne doivent pas être assimilés à une année complète."
+        )
+
+    tariff_chart_data = tariff_summary_df.copy()
+
+    tariff_colors = {
+        "HP hiver": "#C0392B",
+        "HC hiver": "#E67E22",
+        "HP été": "#17365D",
+        "HC été": "#2E8B57",
+    }
+
+    tariff_col1, tariff_col2 = st.columns(2)
+
+    with tariff_col1:
+        fig_tariff_pie = px.pie(
+            tariff_chart_data,
+            names="Categorie_tarifaire",
+            values="Consommation_kWh",
+            hole=0.52,
+            title="Répartition de la consommation par catégorie",
+            color="Categorie_tarifaire",
+            color_discrete_map=tariff_colors,
+        )
+        fig_tariff_pie.update_traces(
+            textinfo="label+percent",
+            hovertemplate=(
+                "%{label}<br>"
+                "%{value:,.0f} kWh<br>"
+                "%{percent}"
+                "<extra></extra>"
+            ),
+        )
+        fig_tariff_pie.update_layout(
+            template="plotly_white",
+            showlegend=False,
+        )
+        st.plotly_chart(
+            fig_tariff_pie,
+            use_container_width=True,
+        )
+
+    with tariff_col2:
+        fig_tariff_bar = px.bar(
+            tariff_chart_data,
+            x="Categorie_tarifaire",
+            y="Consommation_kWh",
+            color="Categorie_tarifaire",
+            color_discrete_map=tariff_colors,
+            text_auto=".0f",
+            title="Consommation par catégorie tarifaire",
+            labels={
+                "Categorie_tarifaire": "",
+                "Consommation_kWh": "Consommation (kWh)",
+            },
+        )
+        fig_tariff_bar.update_layout(
+            template="plotly_white",
+            showlegend=False,
+        )
+        fig_tariff_bar.update_traces(
+            texttemplate="%{y:,.0f} kWh",
+            textposition="outside",
+            cliponaxis=False,
+        )
+        st.plotly_chart(
+            fig_tariff_bar,
+            use_container_width=True,
+        )
+
+    hp_total = hp_winter_kwh + hp_summer_kwh
+    hc_total = hc_winter_kwh + hc_summer_kwh
+    winter_total = hp_winter_kwh + hc_winter_kwh
+    summer_total = hp_summer_kwh + hc_summer_kwh
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric(
+        "Part totale en HP",
+        f"{format_fr(tariff_score_data['hp_share'], 1)} %",
+        help=(
+            "Part de la consommation totale située en heures pleines. "
+            "Une part élevée peut inviter à rechercher les usages décalables, "
+            "mais le déplacement doit rester compatible avec l'activité."
+        ),
+    )
+    s2.metric(
+        "Part totale en HC",
+        f"{format_fr(tariff_score_data['hc_share'], 1)} %",
+        help=(
+            "Part de la consommation totale située dans les plages d'heures "
+            "creuses renseignées."
+        ),
+    )
+    s3.metric(
+        "Consommation hiver",
+        f"{format_fr(winter_total, 0)} kWh",
+        help="Total saison haute, du 1er novembre au 31 mars.",
+    )
+    s4.metric(
+        "Consommation été",
+        f"{format_fr(summer_total, 0)} kWh",
+        help="Total saison basse, du 1er avril au 31 octobre.",
+    )
+
+    with st.expander(
+        "Comprendre l'indice d'optimisation tarifaire CMA"
+    ):
+        st.markdown(
+            f"""
+            Cet indice est un **repère pédagogique de potentiel d'analyse**.
+
+            - **Part consommée en heures pleines — 50 %** :
+              {tariff_score_data['hp_opportunity_score']:.0f}/100
+            - **Écart entre saison haute et saison basse — 25 %** :
+              {tariff_score_data['seasonality_score']:.0f}/100
+            - **Variabilité des consommations — 15 %** :
+              {tariff_score_data['variability_score']:.0f}/100
+            - **Complétude de la période — 10 %** :
+              {tariff_score_data['coverage_score']:.0f}/100
+
+            Un score élevé signifie qu'une analyse complémentaire du contrat,
+            des prix et des usages décalables peut être pertinente. Le score
+            ne compare pas les offres commerciales des fournisseurs.
+            """
+        )
+
+    st.subheader("Tableau récapitulatif")
+
+    tariff_display = tariff_summary_df.copy()
+    tariff_display.columns = [
+        "Catégorie",
+        "Consommation (kWh)",
+        "Nombre d'intervalles",
+        "Part (%)",
+    ]
+
+    st.dataframe(
+        tariff_display.style.format(
+            {
+                "Consommation (kWh)": "{:.2f}",
+                "Part (%)": "{:.1f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Lecture pédagogique")
+
+    st.markdown(
+        f"""
+        <div class="pedagogy-card">
+            <strong>Ce que montre l'analyse</strong><br><br>
+            {build_tariff_commentary(tariff_score_data)}<br><br>
+            Les plages d'heures creuses utilisées sont celles saisies dans
+            le panneau latéral. Toutes les autres heures sont considérées
+            comme des heures pleines. Avant toute recommandation, il faut
+            comparer les résultats avec les prix réels du contrat et vérifier
+            quels usages peuvent réellement être déplacés.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
 # PROFILS HORAIRES
 # ============================================================
 
@@ -4109,6 +4818,14 @@ with tab_export:
                 "Score régularité des consommations (/100)",
                 "Score potentiel solaire local (/100)",
                 "Productible estimé (kWh/kWc)",
+                "HP hiver (kWh)",
+                "HC hiver (kWh)",
+                "HP été (kWh)",
+                "HC été (kWh)",
+                "Part totale HP (%)",
+                "Part totale HC (%)",
+                "Indice optimisation tarifaire CMA (/100)",
+                "Appréciation indice tarifaire",
                 "Facteur de charge (%)",
                 "Horodatages en doublon",
                 "Jours atypiques",
@@ -4224,6 +4941,14 @@ with tab_export:
                     if pvgis_available
                     else ""
                 ),
+                hp_winter_kwh,
+                hc_winter_kwh,
+                hp_summer_kwh,
+                hc_summer_kwh,
+                tariff_score_data["hp_share"],
+                tariff_score_data["hc_share"],
+                tariff_score_data["score"],
+                tariff_score_data["label"],
                 load_factor,
                 duplicate_count,
                 len(atypical_days),
@@ -4367,12 +5092,36 @@ with tab_export:
         .dt.strftime("%m/%Y")
     )
 
+    tariff_summary_export = tariff_summary_df.copy()
+
+    tariff_detail_export = filtered_df[
+        [
+            "Horodate",
+            "Horodate_tarif",
+            "Energie_kWh",
+            "Saison_tarifaire",
+            "Plage_tarifaire",
+            "Categorie_tarifaire",
+        ]
+    ].copy()
+
+    tariff_detail_export["Horodate"] = (
+        tariff_detail_export["Horodate"]
+        .dt.strftime("%d/%m/%Y %H:%M:%S")
+    )
+    tariff_detail_export["Horodate_tarif"] = (
+        tariff_detail_export["Horodate_tarif"]
+        .dt.strftime("%d/%m/%Y %H:%M:%S")
+    )
+
     excel_bytes = make_excel_export(
         hourly_standardized_export,
         hourly_export,
         daily_export,
         monthly_export,
         weekday_hour_matrix.round(3),
+        tariff_summary_export,
+        tariff_detail_export,
         summary_df,
     )
 
@@ -4425,6 +5174,9 @@ with tab_export:
                 self_sufficiency_rate=self_sufficiency_rate,
                 cma_score_data=cma_score_data,
                 annual_yield_kwh_per_kwp=annual_yield_kwh_per_kwp,
+                tariff_summary_df=tariff_summary_df,
+                tariff_score_data=tariff_score_data,
+                hc_ranges=hc_ranges,
                 monthly_df=monthly_df,
                 weekday_hour_matrix=weekday_hour_matrix,
                 hourly_df=hourly_df,
@@ -4510,6 +5262,8 @@ with tab_export:
         - le profil horaire détaillé ;
         - les consommations journalières ;
         - les consommations mensuelles ;
-        - le tableau moyen heure × jour de la semaine.
+        - le tableau moyen heure × jour de la semaine ;
+        - la synthèse HP/HC hiver et été ;
+        - le détail du classement tarifaire intervalle par intervalle.
         """
     )
