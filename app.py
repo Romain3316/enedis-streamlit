@@ -547,9 +547,641 @@ st.markdown(
 )
 
 
+
+# ============================================================
+# CORRECTIF V13 — THÈME CLAIR CMA VERROUILLÉ
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+        :root {
+            color-scheme: light !important;
+            --cma-blue: #17365D;
+            --cma-blue-dark: #102947;
+            --cma-red: #E53935;
+            --cma-red-dark: #C82E2A;
+            --cma-bg: #F5F7FA;
+            --cma-surface: #FFFFFF;
+            --cma-surface-soft: #F8FAFC;
+            --cma-border: #DDE4EB;
+            --cma-text: #202735;
+            --cma-muted: #667287;
+        }
+
+        html,
+        body,
+        .stApp,
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"] {
+            color-scheme: light !important;
+            background: var(--cma-bg) !important;
+            color: var(--cma-text) !important;
+        }
+
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(
+                    circle at top right,
+                    rgba(229,57,53,.035),
+                    transparent 32rem
+                ),
+                linear-gradient(
+                    180deg,
+                    #FFFFFF 0%,
+                    #F5F7FA 52rem
+                ) !important;
+        }
+
+        [data-testid="stHeader"] {
+            background: rgba(255,255,255,.96) !important;
+            border-bottom: 1px solid var(--cma-border) !important;
+        }
+
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3 {
+            color: var(--cma-blue) !important;
+        }
+
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li {
+            color: var(--cma-text) !important;
+        }
+
+        /* Sidebar */
+        [data-testid="stSidebar"] {
+            background:
+                linear-gradient(
+                    180deg,
+                    #FFFFFF 0%,
+                    #F2F5F8 100%
+                ) !important;
+            border-right: 1px solid var(--cma-border) !important;
+        }
+
+        [data-testid="stSidebar"] > div {
+            background: transparent !important;
+        }
+
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span {
+            color: var(--cma-blue) !important;
+        }
+
+        /* Conserver le bandeau sombre avec ses textes blancs */
+        .cma-header,
+        .cma-header * {
+            color: #FFFFFF !important;
+        }
+
+        .cma-logo,
+        .cma-logo * {
+            color: var(--cma-blue) !important;
+        }
+
+        /* Cartes personnalisées */
+        .intro-card,
+        .feature-card,
+        .score-card,
+        .pedagogy-card,
+        .score-breakdown {
+            background-color: var(--cma-surface) !important;
+            color: var(--cma-text) !important;
+            border-color: var(--cma-border) !important;
+        }
+
+        .intro-card *,
+        .feature-card *,
+        .pedagogy-card *,
+        .score-breakdown * {
+            color: var(--cma-text) !important;
+        }
+
+        .feature-card h3,
+        .pedagogy-card strong {
+            color: var(--cma-blue) !important;
+        }
+
+        .feature-card p {
+            color: var(--cma-muted) !important;
+        }
+
+        .score-title,
+        .score-number {
+            color: var(--score-color, var(--cma-blue)) !important;
+        }
+
+        .score-text,
+        .score-total {
+            color: var(--cma-muted) !important;
+        }
+
+        .status-pill {
+            color: #FFFFFF !important;
+        }
+
+        /* KPI */
+        [data-testid="stMetric"] {
+            background: #FFFFFF !important;
+            color: var(--cma-text) !important;
+            border-color: var(--cma-border) !important;
+        }
+
+        [data-testid="stMetric"] * {
+            color: var(--cma-text) !important;
+        }
+
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricLabel"] div {
+            color: var(--cma-muted) !important;
+        }
+
+        [data-testid="stMetricValue"] {
+            color: var(--cma-blue) !important;
+        }
+
+        /* Onglets */
+        [data-baseweb="tab-list"] {
+            background: #FFFFFF !important;
+            border: 1px solid var(--cma-border) !important;
+            border-radius: 14px !important;
+            padding: 5px !important;
+        }
+
+        button[data-baseweb="tab"] {
+            color: var(--cma-muted) !important;
+            background: transparent !important;
+            border-radius: 10px !important;
+        }
+
+        button[data-baseweb="tab"] * {
+            color: inherit !important;
+        }
+
+        button[data-baseweb="tab"]:hover {
+            color: var(--cma-blue) !important;
+            background: #EAF1F8 !important;
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] {
+            color: var(--cma-red) !important;
+            background: #FFF3F2 !important;
+        }
+
+        [data-baseweb="tab-highlight"] {
+            background-color: var(--cma-red) !important;
+        }
+
+        /* Inputs, listes, dates, heures */
+        input,
+        textarea,
+        [data-baseweb="input"] > div,
+        [data-baseweb="base-input"],
+        [data-baseweb="select"] > div {
+            background: #FFFFFF !important;
+            color: var(--cma-text) !important;
+            -webkit-text-fill-color: var(--cma-text) !important;
+            border-color: var(--cma-border) !important;
+        }
+
+        input::placeholder,
+        textarea::placeholder {
+            color: #98A2B1 !important;
+            opacity: 1 !important;
+        }
+
+        [role="listbox"],
+        [data-baseweb="popover"] > div,
+        [data-baseweb="menu"] {
+            background: #FFFFFF !important;
+            color: var(--cma-text) !important;
+        }
+
+        [role="option"] {
+            background: #FFFFFF !important;
+            color: var(--cma-text) !important;
+        }
+
+        [role="option"]:hover,
+        [role="option"][aria-selected="true"] {
+            background: #EAF1F8 !important;
+            color: var(--cma-blue) !important;
+        }
+
+        /* Radios, cases et curseurs */
+        [role="radiogroup"] label,
+        [role="radiogroup"] label *,
+        [data-testid="stCheckbox"] label,
+        [data-testid="stCheckbox"] label * {
+            color: var(--cma-text) !important;
+        }
+
+        [data-testid="stSlider"] p,
+        [data-testid="stSlider"] span {
+            color: var(--cma-text) !important;
+        }
+
+        [data-testid="stSlider"] [role="slider"] {
+            background: var(--cma-red) !important;
+            border-color: var(--cma-red) !important;
+        }
+
+        /* Upload */
+        [data-testid="stFileUploader"] section {
+            background: #FFFFFF !important;
+            color: var(--cma-text) !important;
+            border: 1px dashed #AEB9C7 !important;
+            border-radius: 14px !important;
+        }
+
+        [data-testid="stFileUploader"] section * {
+            color: var(--cma-text) !important;
+        }
+
+        [data-testid="stFileUploader"] button {
+            background: var(--cma-blue) !important;
+            color: #FFFFFF !important;
+            border: none !important;
+        }
+
+        [data-testid="stFileUploaderFile"] {
+            color: var(--cma-text) !important;
+            background: transparent !important;
+        }
+
+        /* Boutons */
+        .stButton > button,
+        .stDownloadButton > button {
+            color: #FFFFFF !important;
+        }
+
+        .stButton > button * ,
+        .stDownloadButton > button * {
+            color: #FFFFFF !important;
+        }
+
+        /* Alertes */
+        [data-testid="stAlert"] {
+            color: var(--cma-text) !important;
+            border: 1px solid var(--cma-border) !important;
+            border-radius: 14px !important;
+        }
+
+        [data-testid="stAlert"] * {
+            color: inherit !important;
+        }
+
+        /* Expanders */
+        [data-testid="stExpander"] {
+            background: #FFFFFF !important;
+            border: 1px solid var(--cma-border) !important;
+            border-radius: 14px !important;
+        }
+
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary * {
+            color: var(--cma-blue) !important;
+            background: #FFFFFF !important;
+        }
+
+        /* Dataframes et tableaux */
+        [data-testid="stDataFrame"],
+        [data-testid="stTable"] {
+            background: #FFFFFF !important;
+            border: 1px solid var(--cma-border) !important;
+            border-radius: 14px !important;
+            overflow: hidden !important;
+        }
+
+        [data-testid="stDataFrame"] iframe {
+            color-scheme: light !important;
+            background: #FFFFFF !important;
+        }
+
+        /* Plotly */
+        [data-testid="stPlotlyChart"] {
+            background: #FFFFFF !important;
+            border: 1px solid var(--cma-border) !important;
+            border-radius: 16px !important;
+            padding: 7px !important;
+            box-shadow: 0 7px 20px rgba(23,54,93,.05) !important;
+            overflow: hidden !important;
+        }
+
+        [data-testid="stPlotlyChart"] > div {
+            background: #FFFFFF !important;
+        }
+
+        /* Infobulles */
+        [role="tooltip"],
+        [data-baseweb="tooltip"] {
+            background: var(--cma-blue-dark) !important;
+            color: #FFFFFF !important;
+            border-radius: 9px !important;
+        }
+
+        [role="tooltip"] *,
+        [data-baseweb="tooltip"] * {
+            color: #FFFFFF !important;
+        }
+
+        @media (max-width: 850px) {
+            [data-baseweb="tab-list"] {
+                overflow-x: auto !important;
+                justify-content: flex-start !important;
+            }
+
+            button[data-baseweb="tab"] {
+                flex: 0 0 auto !important;
+            }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+
+# ============================================================
+# CORRECTIF V13.1 — VARIABLES NATIVES STREAMLIT + MODE CLAIR
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+        /* Variables internes utilisées par Streamlit/BaseWeb */
+        :root,
+        html,
+        body,
+        .stApp,
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"] {
+            color-scheme: light !important;
+
+            --primary-color: #E53935 !important;
+            --background-color: #F5F7FA !important;
+            --secondary-background-color: #FFFFFF !important;
+            --text-color: #202735 !important;
+
+            --bg-color: #F5F7FA !important;
+            --fg-color: #202735 !important;
+            --border-color: #DDE4EB !important;
+            --base-radius: 0.75rem !important;
+        }
+
+        html,
+        body {
+            background: #F5F7FA !important;
+        }
+
+        .stApp,
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(
+                    circle at top right,
+                    rgba(229,57,53,.035),
+                    transparent 32rem
+                ),
+                linear-gradient(
+                    180deg,
+                    #FFFFFF 0%,
+                    #F5F7FA 52rem
+                ) !important;
+        }
+
+        /* Évite les textes délavés injectés par le thème sombre */
+        .stApp [data-testid="stMarkdownContainer"],
+        .stApp [data-testid="stMarkdownContainer"] *,
+        .stApp [data-testid="stWidgetLabel"],
+        .stApp [data-testid="stWidgetLabel"] *,
+        .stApp [data-testid="stCaptionContainer"],
+        .stApp [data-testid="stCaptionContainer"] *,
+        .stApp [data-testid="stMetric"],
+        .stApp [data-testid="stMetric"] *,
+        .stApp [data-baseweb="tab"],
+        .stApp [data-baseweb="tab"] *,
+        .stApp [role="radiogroup"],
+        .stApp [role="radiogroup"] *,
+        .stApp [data-testid="stFileUploader"],
+        .stApp [data-testid="stFileUploader"] * {
+            opacity: 1 !important;
+        }
+
+        /* Bandeaux info/success/warning/error */
+        .stApp [data-testid="stAlert"] {
+            opacity: 1 !important;
+        }
+
+        .stApp [data-testid="stAlert"] p,
+        .stApp [data-testid="stAlert"] div,
+        .stApp [data-testid="stAlert"] span {
+            color: #17365D !important;
+            -webkit-text-fill-color: #17365D !important;
+            opacity: 1 !important;
+        }
+
+        .stApp [data-testid="stAlert"] svg {
+            color: #17365D !important;
+            fill: #17365D !important;
+        }
+
+        /* Captions */
+        .stApp [data-testid="stCaptionContainer"],
+        .stApp [data-testid="stCaptionContainer"] p,
+        .stApp [data-testid="stCaptionContainer"] span {
+            color: #667287 !important;
+            -webkit-text-fill-color: #667287 !important;
+            opacity: 1 !important;
+        }
+
+        /* KPI */
+        .stApp [data-testid="stMetric"] {
+            background: #FFFFFF !important;
+        }
+
+        .stApp [data-testid="stMetricLabel"],
+        .stApp [data-testid="stMetricLabel"] p,
+        .stApp [data-testid="stMetricLabel"] span {
+            color: #667287 !important;
+            -webkit-text-fill-color: #667287 !important;
+            opacity: 1 !important;
+        }
+
+        .stApp [data-testid="stMetricValue"],
+        .stApp [data-testid="stMetricValue"] div {
+            color: #17365D !important;
+            -webkit-text-fill-color: #17365D !important;
+            opacity: 1 !important;
+        }
+
+        /* Tabs : neutraliser les opacités automatiques */
+        .stApp [data-baseweb="tab-list"] {
+            background: #FFFFFF !important;
+        }
+
+        .stApp button[data-baseweb="tab"] {
+            opacity: 1 !important;
+            color: #667287 !important;
+            -webkit-text-fill-color: #667287 !important;
+        }
+
+        .stApp button[data-baseweb="tab"] * {
+            color: inherit !important;
+            -webkit-text-fill-color: inherit !important;
+            opacity: 1 !important;
+        }
+
+        .stApp button[data-baseweb="tab"][aria-selected="true"] {
+            color: #E53935 !important;
+            -webkit-text-fill-color: #E53935 !important;
+            background: #FFF3F2 !important;
+        }
+
+        /* Inputs et listes */
+        .stApp input,
+        .stApp textarea,
+        .stApp [data-baseweb="input"] *,
+        .stApp [data-baseweb="select"] * {
+            opacity: 1 !important;
+        }
+
+        .stApp input,
+        .stApp textarea {
+            background: #FFFFFF !important;
+            color: #202735 !important;
+            -webkit-text-fill-color: #202735 !important;
+        }
+
+        /* Sidebar */
+        .stApp [data-testid="stSidebar"] {
+            background: linear-gradient(
+                180deg,
+                #FFFFFF 0%,
+                #F2F5F8 100%
+            ) !important;
+        }
+
+        .stApp [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+        .stApp [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] *,
+        .stApp [data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+        .stApp [data-testid="stSidebar"] [data-testid="stWidgetLabel"] * {
+            color: #17365D !important;
+            -webkit-text-fill-color: #17365D !important;
+            opacity: 1 !important;
+        }
+
+        /* Exception volontaire : textes blancs du bandeau */
+        .stApp .cma-header,
+        .stApp .cma-header *,
+        .stApp .status-pill,
+        .stApp .status-pill * {
+            color: #FFFFFF !important;
+            -webkit-text-fill-color: #FFFFFF !important;
+            opacity: 1 !important;
+        }
+
+        .stApp .cma-logo,
+        .stApp .cma-logo * {
+            color: #17365D !important;
+            -webkit-text-fill-color: #17365D !important;
+        }
+
+        /* Fond des graphiques Plotly, même avant rendu JS */
+        .stApp [data-testid="stPlotlyChart"],
+        .stApp [data-testid="stPlotlyChart"] > div,
+        .stApp [data-testid="stPlotlyChart"] .js-plotly-plot,
+        .stApp [data-testid="stPlotlyChart"] .plot-container,
+        .stApp [data-testid="stPlotlyChart"] .svg-container {
+            background: #FFFFFF !important;
+            color-scheme: light !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 # ============================================================
 # FONCTIONS
 # ============================================================
+
+_PLOTLY_CHART_ORIGINAL = st.plotly_chart
+
+
+def _apply_cma_plotly_theme(figure):
+    """Applique uniquement le thème graphique clair CMA."""
+    try:
+        figure.update_layout(
+            template="plotly_white",
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+            font=dict(
+                color="#202735",
+                family="Arial, sans-serif",
+            ),
+            title_font=dict(
+                color="#17365D",
+                size=18,
+            ),
+            legend=dict(
+                font=dict(color="#202735"),
+                bgcolor="rgba(255,255,255,0.88)",
+            ),
+            hoverlabel=dict(
+                bgcolor="#FFFFFF",
+                bordercolor="#DDE4EB",
+                font=dict(color="#202735"),
+            ),
+        )
+
+        figure.update_xaxes(
+            color="#202735",
+            gridcolor="#E7ECF1",
+            zerolinecolor="#DDE4EB",
+            linecolor="#BFC9D4",
+            tickfont=dict(color="#202735"),
+            title_font=dict(color="#17365D"),
+        )
+
+        figure.update_yaxes(
+            color="#202735",
+            gridcolor="#E7ECF1",
+            zerolinecolor="#DDE4EB",
+            linecolor="#BFC9D4",
+            tickfont=dict(color="#202735"),
+            title_font=dict(color="#17365D"),
+        )
+    except Exception:
+        pass
+
+    return figure
+
+
+def cma_plotly_chart(figure, *args, **kwargs):
+    figure = _apply_cma_plotly_theme(figure)
+    kwargs.setdefault(
+        "config",
+        {
+            "displaylogo": False,
+            "responsive": True,
+        },
+    )
+    return _PLOTLY_CHART_ORIGINAL(
+        figure,
+        *args,
+        **kwargs,
+    )
+
+
+st.plotly_chart = cma_plotly_chart
+
+
 
 def file_to_base64(path: Path) -> str | None:
     if not path.exists():
