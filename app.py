@@ -864,37 +864,25 @@ st.markdown(
             background: #FFFFFF !important;
         }
 
-        /* Plotly */
+        /* Conteneur Plotly : ne pas modifier les éléments internes,
+           dont la taille est calculée par Plotly et Streamlit en JavaScript. */
         [data-testid="stPlotlyChart"] {
+            display: block !important;
+            width: 100% !important;
+            max-width: 100% !important;
             background: #FFFFFF !important;
             border: 1px solid var(--cma-border) !important;
             border-radius: 16px !important;
             padding: 7px !important;
+            margin: 0 0 22px 0 !important;
+            box-sizing: border-box !important;
             box-shadow: 0 7px 20px rgba(23,54,93,.05) !important;
-            overflow: hidden !important;
+            overflow: visible !important;
         }
 
-        [data-testid="stPlotlyChart"] > div {
-            background: #FFFFFF !important;
-            width: 100% !important;
-            max-width: 100% !important;
-        }
-
-        [data-testid="stPlotlyChart"] .js-plotly-plot,
-        [data-testid="stPlotlyChart"] .plot-container,
-        [data-testid="stPlotlyChart"] .svg-container {
-            width: 100% !important;
-            max-width: 100% !important;
-        }
-
-        /* Chaque bloc Streamlit conserve sa hauteur réelle. */
-        [data-testid="stVerticalBlock"] {
-            min-width: 0 !important;
-        }
-
+        [data-testid="stVerticalBlock"],
         [data-testid="column"] {
             min-width: 0 !important;
-            overflow: visible !important;
         }
 
         /* Infobulles */
@@ -1111,12 +1099,9 @@ st.markdown(
             -webkit-text-fill-color: #17365D !important;
         }
 
-        /* Fond des graphiques Plotly, même avant rendu JS */
-        .stApp [data-testid="stPlotlyChart"],
-        .stApp [data-testid="stPlotlyChart"] > div,
-        .stApp [data-testid="stPlotlyChart"] .js-plotly-plot,
-        .stApp [data-testid="stPlotlyChart"] .plot-container,
-        .stApp [data-testid="stPlotlyChart"] .svg-container {
+        /* Le fond du conteneur est clair ; les dimensions internes
+           restent entièrement gérées par Plotly. */
+        .stApp [data-testid="stPlotlyChart"] {
             background: #FFFFFF !important;
             color-scheme: light !important;
         }
@@ -1133,11 +1118,60 @@ st.markdown(
 _PLOTLY_CHART_ORIGINAL = st.plotly_chart
 
 
+def _plotly_default_height(figure) -> int:
+    """
+    Détermine une hauteur stable avant l'affichage.
+
+    Les graphiques contenus dans des onglets masqués peuvent être initialisés
+    avec une hauteur incorrecte par le navigateur. Une hauteur explicite évite
+    les chevauchements entre le graphique et les titres suivants.
+    """
+    existing_height = getattr(figure.layout, "height", None)
+    if existing_height:
+        return int(existing_height)
+
+    trace_types = {
+        getattr(trace, "type", "")
+        for trace in getattr(figure, "data", [])
+    }
+
+    if "heatmap" in trace_types:
+        return 680
+
+    if "pie" in trace_types:
+        return 500
+
+    if "bar" in trace_types:
+        horizontal_bars = any(
+            getattr(trace, "orientation", None) == "h"
+            for trace in figure.data
+        )
+        if horizontal_bars:
+            category_count = max(
+                [
+                    len(getattr(trace, "y", []) or [])
+                    for trace in figure.data
+                ]
+                or [0]
+            )
+            return max(430, 150 + category_count * 52)
+        return 480
+
+    if "scatter" in trace_types:
+        return 500
+
+    return 480
+
+
 def _apply_cma_plotly_theme(figure):
-    """Applique uniquement le thème graphique clair CMA."""
+    """Applique une présentation claire sans toucher aux calculs."""
     try:
+        stable_height = _plotly_default_height(figure)
+
         figure.update_layout(
             template="plotly_white",
+            autosize=True,
+            height=stable_height,
             paper_bgcolor="#FFFFFF",
             plot_bgcolor="#FFFFFF",
             font=dict(
@@ -1157,9 +1191,28 @@ def _apply_cma_plotly_theme(figure):
                 bordercolor="#DDE4EB",
                 font=dict(color="#202735"),
             ),
+            margin=dict(
+                l=max(
+                    getattr(figure.layout.margin, "l", None) or 55,
+                    55,
+                ),
+                r=max(
+                    getattr(figure.layout.margin, "r", None) or 35,
+                    35,
+                ),
+                t=max(
+                    getattr(figure.layout.margin, "t", None) or 72,
+                    72,
+                ),
+                b=max(
+                    getattr(figure.layout.margin, "b", None) or 55,
+                    55,
+                ),
+            ),
         )
 
         figure.update_xaxes(
+            automargin=True,
             color="#202735",
             gridcolor="#E7ECF1",
             zerolinecolor="#DDE4EB",
@@ -1169,6 +1222,7 @@ def _apply_cma_plotly_theme(figure):
         )
 
         figure.update_yaxes(
+            automargin=True,
             color="#202735",
             gridcolor="#E7ECF1",
             zerolinecolor="#DDE4EB",
@@ -1184,13 +1238,18 @@ def _apply_cma_plotly_theme(figure):
 
 def cma_plotly_chart(figure, *args, **kwargs):
     figure = _apply_cma_plotly_theme(figure)
+
+    # Streamlit gère déjà la largeur du composant. On désactive le second
+    # mécanisme responsive de Plotly, qui peut recalculer une hauteur nulle
+    # lors de l'ouverture d'un onglet initialement masqué.
     kwargs.setdefault(
         "config",
         {
             "displaylogo": False,
-            "responsive": True,
+            "responsive": False,
         },
     )
+
     return _PLOTLY_CHART_ORIGINAL(
         figure,
         *args,
