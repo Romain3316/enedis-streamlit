@@ -2544,6 +2544,480 @@ def build_tariff_commentary(score_data: dict) -> str:
     return hp_text + " " + season_text
 
 
+
+# ============================================================
+# MOTEUR FINANCIER PHOTOVOLTAÏQUE
+# ============================================================
+
+PV_FIXING_COSTS_EUR_WC = {
+    "Surimposition": 0.30,
+    "Bac acier + panneaux": 0.10,
+    "Bac acier isolé + panneaux": 0.10,
+    "Lesté en toiture terrasse": 0.25,
+    "Soudé sur toiture terrasse": 0.20,
+    "Intégré au bâti": 0.55,
+    "Installation au sol": 0.35,
+    "Ombrière": 0.70,
+}
+
+ROOF_RENOVATION_COSTS_EUR_M2 = {
+    "Bac acier isolé": 140.0,
+    "Bac acier": 90.0,
+    "Fibrociment": 90.0,
+    "Tuile": 80.0,
+    "Ardoise": 150.0,
+    "Toiture terrasse": 150.0,
+}
+
+ASBESTOS_REMOVAL_EUR_M2 = 60.0
+
+
+def installation_cost_eur_wc(peak_power_kwp: float) -> float:
+    """Coût modules + onduleur + câblage + pose, hors fixation."""
+    if peak_power_kwp <= 9:
+        return 1.30
+    if peak_power_kwp <= 36:
+        return 0.75
+    if peak_power_kwp <= 100:
+        return 0.65
+    return 0.45
+
+
+def turpe_annual_cost(peak_power_kwp: float) -> float:
+    if peak_power_kwp <= 36:
+        return 9.24
+    if peak_power_kwp <= 250:
+        return 136.08
+    return 272.40
+
+
+def ifer_annual_cost(
+    peak_power_kwp: float,
+    rate_eur_kwp: float = 3.542,
+) -> float:
+    return (
+        peak_power_kwp * rate_eur_kwp
+        if peak_power_kwp > 100
+        else 0.0
+    )
+
+
+def calculate_connection_cost(
+    peak_power_kwp: float,
+    connection_mode: str,
+    public_extension_length_m: float,
+    private_trench_length_m: float,
+    apply_enedis_reduction: bool,
+    include_private_hta_post: bool,
+    include_decoupling_cell: bool,
+) -> dict:
+    """
+    Estimation indicative du raccordement en vente de surplus.
+
+    La réfaction Enedis est appliquée uniquement aux ouvrages publics
+    calculés dans cette fonction. Les ouvrages privés restent à la charge
+    du porteur de projet.
+    """
+    if peak_power_kwp <= 36:
+        public_gross = 0.0
+    elif connection_mode == "Branchement BT avec extension":
+        public_gross = (
+            1000.0
+            + 1000.0
+            + 50.0 * public_extension_length_m
+        )
+    elif connection_mode == "Branchement complet C4":
+        public_gross = 1700.0
+    elif connection_mode == "Création poste BT-HTA":
+        public_gross = (
+            8800.0
+            + 2200.0
+            + 50.0 * public_extension_length_m
+        )
+    else:
+        public_gross = 0.0
+
+    reduction = (
+        public_gross * 0.60
+        if apply_enedis_reduction and peak_power_kwp > 36
+        else 0.0
+    )
+    public_net = max(public_gross - reduction, 0.0)
+
+    private_trench = 125.0 * private_trench_length_m
+    private_post = 55000.0 if include_private_hta_post else 0.0
+    decoupling_cell = 15000.0 if include_decoupling_cell else 0.0
+
+    private_total = private_trench + private_post + decoupling_cell
+    total = public_net + private_total
+
+    return {
+        "public_gross": public_gross,
+        "enedis_reduction": reduction,
+        "public_net": public_net,
+        "private_trench": private_trench,
+        "private_post": private_post,
+        "decoupling_cell": decoupling_cell,
+        "private_total": private_total,
+        "total": total,
+    }
+
+
+def calculate_investment_costs(
+    peak_power_kwp: float,
+    fixing_type: str,
+    erp_icpe_surcharge: bool,
+    structural_study_cost: float,
+    roof_renovation_enabled: bool,
+    roof_type: str,
+    roof_area_m2: float,
+    asbestos_removal_enabled: bool,
+    connection_data: dict,
+    other_investment_costs: float,
+    grant_amount: float,
+) -> dict:
+    power_wc = peak_power_kwp * 1000.0
+
+    fixing_rate = PV_FIXING_COSTS_EUR_WC[fixing_type]
+    equipment_rate = installation_cost_eur_wc(peak_power_kwp)
+    erp_rate = 0.10 if erp_icpe_surcharge else 0.0
+
+    fixing_cost = fixing_rate * power_wc
+    equipment_cost = equipment_rate * power_wc
+    erp_surcharge_cost = erp_rate * power_wc
+
+    roof_cost = (
+        ROOF_RENOVATION_COSTS_EUR_M2[roof_type] * roof_area_m2
+        if roof_renovation_enabled
+        else 0.0
+    )
+    asbestos_cost = (
+        ASBESTOS_REMOVAL_EUR_M2 * roof_area_m2
+        if asbestos_removal_enabled
+        else 0.0
+    )
+
+    gross_total = (
+        fixing_cost
+        + equipment_cost
+        + erp_surcharge_cost
+        + structural_study_cost
+        + roof_cost
+        + asbestos_cost
+        + connection_data["total"]
+        + other_investment_costs
+    )
+
+    net_total = max(gross_total - grant_amount, 0.0)
+
+    return {
+        "power_wc": power_wc,
+        "fixing_rate": fixing_rate,
+        "equipment_rate": equipment_rate,
+        "fixing_cost": fixing_cost,
+        "equipment_cost": equipment_cost,
+        "erp_surcharge_cost": erp_surcharge_cost,
+        "structural_study_cost": structural_study_cost,
+        "roof_cost": roof_cost,
+        "asbestos_cost": asbestos_cost,
+        "connection_cost": connection_data["total"],
+        "other_investment_costs": other_investment_costs,
+        "gross_total": gross_total,
+        "grant_amount": grant_amount,
+        "net_total": net_total,
+    }
+
+
+def tariff_price_map(
+    tariff_type: str,
+    unique_price: float,
+    hp_price: float,
+    hc_price: float,
+    hp_winter_price: float,
+    hc_winter_price: float,
+    hp_summer_price: float,
+    hc_summer_price: float,
+) -> dict:
+    if tariff_type == "Tarif unique":
+        return {
+            "HP hiver": unique_price,
+            "HC hiver": unique_price,
+            "HP été": unique_price,
+            "HC été": unique_price,
+        }
+
+    if tariff_type == "HP / HC":
+        return {
+            "HP hiver": hp_price,
+            "HC hiver": hc_price,
+            "HP été": hp_price,
+            "HC été": hc_price,
+        }
+
+    return {
+        "HP hiver": hp_winter_price,
+        "HC hiver": hc_winter_price,
+        "HP été": hp_summer_price,
+        "HC été": hc_summer_price,
+    }
+
+
+def calculate_energy_value(
+    df: pd.DataFrame,
+    price_map: dict,
+    surplus_sale_price: float,
+    annual_subscription: float,
+    analysis_years: float,
+) -> dict:
+    result = df.copy()
+    result["Prix_achat_EUR_kWh"] = (
+        result["Categorie_tarifaire"]
+        .map(price_map)
+        .fillna(0.0)
+    )
+
+    result["Cout_electricite_avant_PV_EUR"] = (
+        result["Energie_kWh"]
+        * result["Prix_achat_EUR_kWh"]
+    )
+
+    autoconsumed = (
+        result["Autoconsommation_estimee_kWh"].fillna(0.0)
+        if "Autoconsommation_estimee_kWh" in result.columns
+        else pd.Series(0.0, index=result.index)
+    )
+
+    pv_production = (
+        result["Production_PV_kWh"].fillna(0.0)
+        if "Production_PV_kWh" in result.columns
+        else pd.Series(0.0, index=result.index)
+    )
+
+    result["Economie_autoconsommation_EUR"] = (
+        autoconsumed * result["Prix_achat_EUR_kWh"]
+    )
+    result["Surplus_PV_kWh"] = (
+        pv_production - autoconsumed
+    ).clip(lower=0.0)
+    result["Revenu_surplus_EUR"] = (
+        result["Surplus_PV_kWh"] * surplus_sale_price
+    )
+
+    safe_years = max(float(analysis_years), 1 / 365.25)
+    annual_factor = 1.0 / safe_years
+
+    annual_energy_bill = (
+        result["Cout_electricite_avant_PV_EUR"].sum()
+        * annual_factor
+        + annual_subscription
+    )
+    annual_self_consumption_saving = (
+        result["Economie_autoconsommation_EUR"].sum()
+        * annual_factor
+    )
+    annual_surplus_revenue = (
+        result["Revenu_surplus_EUR"].sum()
+        * annual_factor
+    )
+
+    return {
+        "detail": result,
+        "annual_factor": annual_factor,
+        "annual_energy_bill": annual_energy_bill,
+        "annual_self_consumption_saving": annual_self_consumption_saving,
+        "annual_surplus_revenue": annual_surplus_revenue,
+    }
+
+
+def calculate_annual_operating_costs(
+    peak_power_kwp: float,
+    investment_gross: float,
+    insurance_rate_percent: float,
+    maintenance_eur_kwp: float,
+    inverter_provision_eur_kwp: float,
+    ifer_rate_eur_kwp: float,
+    other_annual_costs: float,
+) -> dict:
+    insurance = (
+        investment_gross
+        * insurance_rate_percent
+        / 100.0
+    )
+    maintenance = maintenance_eur_kwp * peak_power_kwp
+    inverter_provision = (
+        inverter_provision_eur_kwp * peak_power_kwp
+    )
+    turpe = turpe_annual_cost(peak_power_kwp)
+    ifer = ifer_annual_cost(
+        peak_power_kwp,
+        ifer_rate_eur_kwp,
+    )
+
+    total = (
+        insurance
+        + maintenance
+        + inverter_provision
+        + turpe
+        + ifer
+        + other_annual_costs
+    )
+
+    return {
+        "insurance": insurance,
+        "maintenance": maintenance,
+        "inverter_provision": inverter_provision,
+        "turpe": turpe,
+        "ifer": ifer,
+        "other": other_annual_costs,
+        "total": total,
+    }
+
+
+def npv_from_cashflows(
+    cashflows: list[float],
+    discount_rate: float,
+) -> float:
+    return sum(
+        cashflow / ((1.0 + discount_rate) ** year)
+        for year, cashflow in enumerate(cashflows)
+    )
+
+
+def irr_from_cashflows(
+    cashflows: list[float],
+    lower: float = -0.99,
+    upper: float = 5.0,
+) -> float:
+    """TRI annuel calculé par dichotomie, sans dépendance supplémentaire."""
+    def value(rate: float) -> float:
+        return npv_from_cashflows(cashflows, rate)
+
+    low_value = value(lower)
+    high_value = value(upper)
+
+    if low_value * high_value > 0:
+        return np.nan
+
+    for _ in range(150):
+        middle = (lower + upper) / 2.0
+        middle_value = value(middle)
+
+        if abs(middle_value) < 1e-8:
+            return middle
+
+        if low_value * middle_value <= 0:
+            upper = middle
+            high_value = middle_value
+        else:
+            lower = middle
+            low_value = middle_value
+
+    return (lower + upper) / 2.0
+
+
+def build_financial_projection(
+    net_investment: float,
+    annual_self_consumption_saving: float,
+    annual_surplus_revenue: float,
+    annual_operating_cost: float,
+    horizon_years: int,
+    electricity_price_increase_percent: float,
+    surplus_price_increase_percent: float,
+    production_degradation_percent: float,
+    operating_cost_increase_percent: float,
+    discount_rate_percent: float,
+) -> dict:
+    rows = []
+    cumulative = -net_investment
+    discounted_cumulative = -net_investment
+    cashflows = [-net_investment]
+    payback_year = np.nan
+
+    for year in range(1, horizon_years + 1):
+        production_factor = (
+            1.0 - production_degradation_percent / 100.0
+        ) ** (year - 1)
+        electricity_factor = (
+            1.0 + electricity_price_increase_percent / 100.0
+        ) ** (year - 1)
+        surplus_factor = (
+            1.0 + surplus_price_increase_percent / 100.0
+        ) ** (year - 1)
+        opex_factor = (
+            1.0 + operating_cost_increase_percent / 100.0
+        ) ** (year - 1)
+
+        self_consumption_saving = (
+            annual_self_consumption_saving
+            * production_factor
+            * electricity_factor
+        )
+        surplus_revenue = (
+            annual_surplus_revenue
+            * production_factor
+            * surplus_factor
+        )
+        operating_cost = (
+            annual_operating_cost * opex_factor
+        )
+        net_cashflow = (
+            self_consumption_saving
+            + surplus_revenue
+            - operating_cost
+        )
+
+        discount_factor = (
+            1.0 + discount_rate_percent / 100.0
+        ) ** year
+        discounted_cashflow = net_cashflow / discount_factor
+
+        previous_cumulative = cumulative
+        cumulative += net_cashflow
+        discounted_cumulative += discounted_cashflow
+        cashflows.append(net_cashflow)
+
+        if (
+            pd.isna(payback_year)
+            and cumulative >= 0
+            and net_cashflow > 0
+        ):
+            fraction = (
+                -previous_cumulative / net_cashflow
+                if previous_cumulative < 0
+                else 0.0
+            )
+            payback_year = year - 1 + fraction
+
+        rows.append(
+            {
+                "Année": year,
+                "Économie autoconsommation (€)": self_consumption_saving,
+                "Revenu surplus (€)": surplus_revenue,
+                "Charges annuelles (€)": operating_cost,
+                "Flux net (€)": net_cashflow,
+                "Flux actualisé (€)": discounted_cashflow,
+                "Cumul net (€)": cumulative,
+                "Cumul actualisé (€)": discounted_cumulative,
+            }
+        )
+
+    discount_rate = discount_rate_percent / 100.0
+    npv = npv_from_cashflows(cashflows, discount_rate)
+    irr = irr_from_cashflows(cashflows)
+
+    return {
+        "table": pd.DataFrame(rows),
+        "cashflows": cashflows,
+        "payback_year": payback_year,
+        "npv": npv,
+        "irr": irr,
+        "total_net_gain": cumulative,
+        "annual_net_gain_year_1": (
+            rows[0]["Flux net (€)"] if rows else 0.0
+        ),
+    }
+
+
 def safe_pdf_text(value) -> str:
     if value is None:
         return ""
@@ -3342,6 +3816,8 @@ def make_excel_export(
     weekday_hour_matrix: pd.DataFrame,
     tariff_summary: pd.DataFrame,
     tariff_detail: pd.DataFrame,
+    financial_summary: pd.DataFrame,
+    financial_projection_data: pd.DataFrame,
     summary: pd.DataFrame,
 ) -> bytes:
     output = BytesIO()
@@ -3377,6 +3853,16 @@ def make_excel_export(
             writer,
             index=False,
             sheet_name="Détail tarifaire",
+        )
+        financial_summary.to_excel(
+            writer,
+            index=False,
+            sheet_name="Synthèse financière",
+        )
+        financial_projection_data.to_excel(
+            writer,
+            index=False,
+            sheet_name="Projection financière",
         )
 
         workbook = writer.book
@@ -3750,6 +4236,339 @@ with st.sidebar:
         "Le milieu de chaque intervalle Enedis est utilisé pour le classement."
     )
 
+    st.markdown("---")
+    st.markdown("## 7. Hypothèses économiques")
+
+    electricity_tariff_type = st.selectbox(
+        "Type de tarif d'achat",
+        [
+            "Tarif unique",
+            "HP / HC",
+            "HP / HC hiver-été",
+        ],
+        help=(
+            "Saisissez les prix présents sur une facture ou un contrat récent. "
+            "Les tarifs ne sont pas maintenus automatiquement par l'application."
+        ),
+    )
+
+    unique_electricity_price = 0.18
+    hp_electricity_price = 0.20
+    hc_electricity_price = 0.15
+    hp_winter_electricity_price = 0.21
+    hc_winter_electricity_price = 0.16
+    hp_summer_electricity_price = 0.18
+    hc_summer_electricity_price = 0.14
+
+    if electricity_tariff_type == "Tarif unique":
+        unique_electricity_price = st.number_input(
+            "Prix d'achat de l'électricité (€/kWh HT)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.1842,
+            step=0.0010,
+            format="%.4f",
+        )
+
+    elif electricity_tariff_type == "HP / HC":
+        hp_col, hc_col = st.columns(2)
+
+        with hp_col:
+            hp_electricity_price = st.number_input(
+                "Prix HP (€/kWh HT)",
+                min_value=0.0,
+                max_value=5.0,
+                value=0.20,
+                step=0.0010,
+                format="%.4f",
+            )
+
+        with hc_col:
+            hc_electricity_price = st.number_input(
+                "Prix HC (€/kWh HT)",
+                min_value=0.0,
+                max_value=5.0,
+                value=0.15,
+                step=0.0010,
+                format="%.4f",
+            )
+
+    else:
+        hp_winter_electricity_price = st.number_input(
+            "Prix HP hiver (€/kWh HT)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.21,
+            step=0.0010,
+            format="%.4f",
+        )
+        hc_winter_electricity_price = st.number_input(
+            "Prix HC hiver (€/kWh HT)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.16,
+            step=0.0010,
+            format="%.4f",
+        )
+        hp_summer_electricity_price = st.number_input(
+            "Prix HP été (€/kWh HT)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.18,
+            step=0.0010,
+            format="%.4f",
+        )
+        hc_summer_electricity_price = st.number_input(
+            "Prix HC été (€/kWh HT)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.14,
+            step=0.0010,
+            format="%.4f",
+        )
+
+    annual_subscription_eur = st.number_input(
+        "Abonnement annuel (€ HT)",
+        min_value=0.0,
+        max_value=100000.0,
+        value=300.0,
+        step=10.0,
+    )
+
+    surplus_sale_price_eur_kwh = st.number_input(
+        "Prix de vente du surplus (€/kWh HT)",
+        min_value=0.0,
+        max_value=5.0,
+        value=0.0761,
+        step=0.0010,
+        format="%.4f",
+    )
+
+    st.markdown("### Investissement")
+
+    fixing_type = st.selectbox(
+        "Système de fixation",
+        list(PV_FIXING_COSTS_EUR_WC.keys()),
+    )
+
+    erp_icpe_surcharge = st.checkbox(
+        "Projet ERP ou ICPE : ajouter 0,10 €/Wc",
+        value=False,
+    )
+
+    structural_study_cost = st.number_input(
+        "Étude structure charpente/toiture (€ HT)",
+        min_value=0.0,
+        max_value=100000.0,
+        value=2000.0,
+        step=250.0,
+    )
+
+    roof_renovation_enabled = st.checkbox(
+        "Intégrer une rénovation de couverture",
+        value=False,
+    )
+
+    roof_type = st.selectbox(
+        "Type de couverture à rénover",
+        list(ROOF_RENOVATION_COSTS_EUR_M2.keys()),
+        disabled=not roof_renovation_enabled,
+    )
+
+    roof_area_m2 = st.number_input(
+        "Surface de couverture concernée (m²)",
+        min_value=0.0,
+        max_value=100000.0,
+        value=0.0,
+        step=10.0,
+        disabled=not roof_renovation_enabled,
+    )
+
+    asbestos_removal_enabled = st.checkbox(
+        "Prévoir un désamiantage à 60 €/m²",
+        value=False,
+        disabled=not roof_renovation_enabled,
+    )
+
+    st.markdown("### Raccordement")
+
+    connection_mode = st.selectbox(
+        "Scénario indicatif de raccordement",
+        [
+            "Aucun / inférieur ou égal à 36 kWc",
+            "Branchement BT avec extension",
+            "Branchement complet C4",
+            "Création poste BT-HTA",
+        ],
+    )
+
+    public_extension_length_m = st.number_input(
+        "Longueur d'extension publique (m)",
+        min_value=0.0,
+        max_value=10000.0,
+        value=0.0,
+        step=5.0,
+        disabled=(
+            connection_mode
+            not in [
+                "Branchement BT avec extension",
+                "Création poste BT-HTA",
+            ]
+        ),
+    )
+
+    apply_enedis_reduction = st.checkbox(
+        "Appliquer une réfaction Enedis indicative de 60 %",
+        value=True,
+        disabled=pv_peak_kwp <= 36,
+        help=(
+            "Hypothèse indicative issue du document transmis. "
+            "Elle doit être confirmée par une proposition de raccordement."
+        ),
+    )
+
+    private_trench_length_m = st.number_input(
+        "Tranchée interne privée (m)",
+        min_value=0.0,
+        max_value=10000.0,
+        value=0.0,
+        step=5.0,
+    )
+
+    include_private_hta_post = st.checkbox(
+        "Création d'un poste privé HTA/BT",
+        value=False,
+    )
+
+    include_decoupling_cell = st.checkbox(
+        "Ajouter une cellule de découplage",
+        value=False,
+    )
+
+    other_investment_costs = st.number_input(
+        "Autres coûts d'investissement (€ HT)",
+        min_value=0.0,
+        max_value=10000000.0,
+        value=0.0,
+        step=500.0,
+    )
+
+    grant_amount = st.number_input(
+        "Aides ou subventions déduites (€)",
+        min_value=0.0,
+        max_value=10000000.0,
+        value=0.0,
+        step=500.0,
+    )
+
+    st.markdown("### Charges annuelles")
+
+    insurance_rate_percent = st.slider(
+        "Assurance multirisque et perte d'exploitation",
+        min_value=0.0,
+        max_value=2.0,
+        value=0.5,
+        step=0.1,
+        format="%.1f %% de l'investissement",
+    )
+
+    maintenance_eur_kwp = st.slider(
+        "Suivi et maintenance",
+        min_value=0.0,
+        max_value=30.0,
+        value=10.5,
+        step=0.5,
+        format="%.1f €/kWc/an",
+    )
+
+    inverter_provision_eur_kwp = st.slider(
+        "Provision remplacement onduleurs",
+        min_value=0.0,
+        max_value=15.0,
+        value=3.0,
+        step=0.5,
+        format="%.1f €/kWc/an",
+    )
+
+    ifer_rate_eur_kwp = st.number_input(
+        "Tarif IFER si puissance > 100 kWc (€/kWc/an)",
+        min_value=0.0,
+        max_value=100.0,
+        value=3.542,
+        step=0.001,
+        format="%.3f",
+    )
+
+    other_annual_costs = st.number_input(
+        "Autres charges annuelles (€ HT/an)",
+        min_value=0.0,
+        max_value=1000000.0,
+        value=0.0,
+        step=100.0,
+    )
+
+    st.markdown("### Projection")
+
+    financial_horizon_years = st.slider(
+        "Durée de projection",
+        min_value=5,
+        max_value=40,
+        value=20,
+        step=1,
+        format="%d ans",
+    )
+
+    electricity_price_increase_percent = st.slider(
+        "Hausse annuelle du prix d'achat",
+        min_value=0.0,
+        max_value=10.0,
+        value=2.0,
+        step=0.1,
+        format="%.1f %%",
+    )
+
+    surplus_price_increase_percent = st.slider(
+        "Évolution annuelle du tarif de surplus",
+        min_value=-5.0,
+        max_value=10.0,
+        value=0.0,
+        step=0.1,
+        format="%.1f %%",
+    )
+
+    production_degradation_percent = st.slider(
+        "Dégradation annuelle de la production",
+        min_value=0.0,
+        max_value=2.0,
+        value=0.5,
+        step=0.1,
+        format="%.1f %%",
+    )
+
+    operating_cost_increase_percent = st.slider(
+        "Hausse annuelle des charges",
+        min_value=0.0,
+        max_value=10.0,
+        value=2.0,
+        step=0.1,
+        format="%.1f %%",
+    )
+
+    discount_rate_percent = st.slider(
+        "Taux d'actualisation",
+        min_value=0.0,
+        max_value=15.0,
+        value=4.0,
+        step=0.1,
+        format="%.1f %%",
+    )
+
+    st.caption(
+        "Les coûts sont des ordres de grandeur HT issus des documents "
+        "métier transmis. Ils doivent être confirmés par des devis, une "
+        "étude structure et une proposition de raccordement Enedis."
+    )
+
 
 filtered_df = filter_period(
     enriched_df,
@@ -3963,6 +4782,89 @@ if solar_analysis_available:
         solar_analysis_available = False
         solar_error = f"Analyse solaire impossible : {exc}"
 
+analysis_duration_years = max(
+    analysis_days / 365.25,
+    1 / 365.25,
+)
+
+connection_data = calculate_connection_cost(
+    peak_power_kwp=pv_peak_kwp,
+    connection_mode=connection_mode,
+    public_extension_length_m=public_extension_length_m,
+    private_trench_length_m=private_trench_length_m,
+    apply_enedis_reduction=apply_enedis_reduction,
+    include_private_hta_post=include_private_hta_post,
+    include_decoupling_cell=include_decoupling_cell,
+)
+
+investment_data = calculate_investment_costs(
+    peak_power_kwp=pv_peak_kwp,
+    fixing_type=fixing_type,
+    erp_icpe_surcharge=erp_icpe_surcharge,
+    structural_study_cost=structural_study_cost,
+    roof_renovation_enabled=roof_renovation_enabled,
+    roof_type=roof_type,
+    roof_area_m2=roof_area_m2,
+    asbestos_removal_enabled=asbestos_removal_enabled,
+    connection_data=connection_data,
+    other_investment_costs=other_investment_costs,
+    grant_amount=grant_amount,
+)
+
+electricity_prices = tariff_price_map(
+    tariff_type=electricity_tariff_type,
+    unique_price=unique_electricity_price,
+    hp_price=hp_electricity_price,
+    hc_price=hc_electricity_price,
+    hp_winter_price=hp_winter_electricity_price,
+    hc_winter_price=hc_winter_electricity_price,
+    hp_summer_price=hp_summer_electricity_price,
+    hc_summer_price=hc_summer_electricity_price,
+)
+
+energy_value_data = calculate_energy_value(
+    df=filtered_df,
+    price_map=electricity_prices,
+    surplus_sale_price=surplus_sale_price_eur_kwh,
+    annual_subscription=annual_subscription_eur,
+    analysis_years=analysis_duration_years,
+)
+
+operating_cost_data = calculate_annual_operating_costs(
+    peak_power_kwp=pv_peak_kwp,
+    investment_gross=investment_data["gross_total"],
+    insurance_rate_percent=insurance_rate_percent,
+    maintenance_eur_kwp=maintenance_eur_kwp,
+    inverter_provision_eur_kwp=inverter_provision_eur_kwp,
+    ifer_rate_eur_kwp=ifer_rate_eur_kwp,
+    other_annual_costs=other_annual_costs,
+)
+
+financial_projection = build_financial_projection(
+    net_investment=investment_data["net_total"],
+    annual_self_consumption_saving=(
+        energy_value_data["annual_self_consumption_saving"]
+    ),
+    annual_surplus_revenue=(
+        energy_value_data["annual_surplus_revenue"]
+    ),
+    annual_operating_cost=operating_cost_data["total"],
+    horizon_years=financial_horizon_years,
+    electricity_price_increase_percent=(
+        electricity_price_increase_percent
+    ),
+    surplus_price_increase_percent=(
+        surplus_price_increase_percent
+    ),
+    production_degradation_percent=(
+        production_degradation_percent
+    ),
+    operating_cost_increase_percent=(
+        operating_cost_increase_percent
+    ),
+    discount_rate_percent=discount_rate_percent,
+)
+
 load_factor = (
     mean_power_kw / maximum_power_kw * 100
     if maximum_power_kw
@@ -4074,6 +4976,7 @@ st.caption(interpretation)
     tab_dashboard,
     tab_solar,
     tab_tariff,
+    tab_financial,
     tab_profiles,
     tab_daily,
     tab_quality,
@@ -4083,6 +4986,7 @@ st.caption(interpretation)
         "📊 Tableau de bord",
         "☀️ Analyse solaire",
         "⚡ Analyse tarifaire",
+        "💶 Étude financière",
         "🕒 Profils horaires",
         "📅 Consommations journalières",
         "✅ Qualité des données",
@@ -5073,6 +5977,340 @@ with tab_tariff:
 
 
 # ============================================================
+# ÉTUDE FINANCIÈRE
+# ============================================================
+
+with tab_financial:
+    st.subheader("Étude financière indicative du projet")
+
+    st.warning(
+        "Cette simulation fournit des ordres de grandeur HT. "
+        "Elle ne remplace pas les devis, l'étude structure, la proposition "
+        "de raccordement Enedis, l'analyse fiscale ou le plan de financement."
+    )
+
+    if not pvgis_available:
+        st.info(
+            "L'adresse et les données PVGIS sont nécessaires pour valoriser "
+            "l'autoconsommation et le surplus. Les coûts d'investissement "
+            "restent néanmoins consultables."
+        )
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    f1.metric(
+        "Investissement brut",
+        f"{format_fr(investment_data['gross_total'], 0)} € HT",
+        help="Somme des équipements, fixation, études, toiture, raccordement et autres coûts.",
+    )
+    f2.metric(
+        "Investissement net",
+        f"{format_fr(investment_data['net_total'], 0)} € HT",
+        help="Investissement brut diminué des aides ou subventions saisies.",
+    )
+    f3.metric(
+        "Gain net estimé en année 1",
+        f"{format_fr(financial_projection['annual_net_gain_year_1'], 0)} €",
+        help="Économies d'autoconsommation + revenus du surplus - charges annuelles.",
+    )
+    f4.metric(
+        "Temps de retour simple",
+        (
+            f"{format_fr(financial_projection['payback_year'], 1)} ans"
+            if not pd.isna(financial_projection["payback_year"])
+            else "Au-delà de l'horizon"
+        ),
+    )
+
+    f5, f6, f7, f8 = st.columns(4)
+
+    f5.metric(
+        f"VAN à {financial_horizon_years} ans",
+        f"{format_fr(financial_projection['npv'], 0)} €",
+        help="Valeur actuelle nette calculée avec le taux d'actualisation renseigné.",
+    )
+    f6.metric(
+        "TRI estimé",
+        (
+            f"{format_fr(financial_projection['irr'] * 100, 1)} %"
+            if not pd.isna(financial_projection["irr"])
+            else "Non calculable"
+        ),
+    )
+    f7.metric(
+        f"Gain net cumulé à {financial_horizon_years} ans",
+        f"{format_fr(financial_projection['total_net_gain'], 0)} €",
+    )
+    f8.metric(
+        "Charges annuelles initiales",
+        f"{format_fr(operating_cost_data['total'], 0)} € / an",
+    )
+
+    st.subheader("Décomposition de l'investissement")
+
+    investment_breakdown = pd.DataFrame(
+        {
+            "Poste": [
+                "Modules, onduleur, câblage et pose",
+                "Système de fixation",
+                "Surcoût ERP / ICPE",
+                "Étude structure",
+                "Rénovation de couverture",
+                "Désamiantage",
+                "Raccordement",
+                "Autres coûts",
+            ],
+            "Montant_EUR": [
+                investment_data["equipment_cost"],
+                investment_data["fixing_cost"],
+                investment_data["erp_surcharge_cost"],
+                investment_data["structural_study_cost"],
+                investment_data["roof_cost"],
+                investment_data["asbestos_cost"],
+                investment_data["connection_cost"],
+                investment_data["other_investment_costs"],
+            ],
+        }
+    )
+    investment_breakdown = investment_breakdown[
+        investment_breakdown["Montant_EUR"] > 0
+    ]
+
+    inv_col1, inv_col2 = st.columns([1.1, 1])
+
+    with inv_col1:
+        fig_investment = px.bar(
+            investment_breakdown,
+            x="Montant_EUR",
+            y="Poste",
+            orientation="h",
+            text_auto=".0f",
+            title="Répartition du coût d'investissement",
+            labels={
+                "Montant_EUR": "Montant (€ HT)",
+                "Poste": "",
+            },
+        )
+        fig_investment.update_traces(
+            texttemplate="%{x:,.0f} €",
+            textposition="outside",
+            cliponaxis=False,
+        )
+        st.plotly_chart(
+            fig_investment,
+            use_container_width=True,
+        )
+
+    with inv_col2:
+        investment_table = investment_breakdown.copy()
+        investment_table.columns = ["Poste", "Montant (€ HT)"]
+        total_row = pd.DataFrame(
+            {
+                "Poste": [
+                    "TOTAL BRUT",
+                    "Aides déduites",
+                    "TOTAL NET",
+                ],
+                "Montant (€ HT)": [
+                    investment_data["gross_total"],
+                    -investment_data["grant_amount"],
+                    investment_data["net_total"],
+                ],
+            }
+        )
+        investment_table = pd.concat(
+            [investment_table, total_row],
+            ignore_index=True,
+        )
+
+        st.dataframe(
+            investment_table.style.format(
+                {"Montant (€ HT)": "{:,.0f} €"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Raccordement indicatif")
+
+    connection_table = pd.DataFrame(
+        {
+            "Poste": [
+                "Ouvrages publics avant réfaction",
+                "Réfaction Enedis estimative",
+                "Ouvrages publics après réfaction",
+                "Tranchée privée",
+                "Poste privé HTA/BT",
+                "Cellule de découplage",
+                "Total raccordement",
+            ],
+            "Montant (€ HT)": [
+                connection_data["public_gross"],
+                -connection_data["enedis_reduction"],
+                connection_data["public_net"],
+                connection_data["private_trench"],
+                connection_data["private_post"],
+                connection_data["decoupling_cell"],
+                connection_data["total"],
+            ],
+        }
+    )
+
+    st.dataframe(
+        connection_table.style.format(
+            {"Montant (€ HT)": "{:,.0f} €"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Valorisation annuelle de l'énergie")
+
+    e1, e2, e3, e4 = st.columns(4)
+
+    e1.metric(
+        "Facture annuelle de référence",
+        f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HT",
+        help="Estimation annualisée à partir de la courbe de charge et des prix saisis, abonnement inclus.",
+    )
+    e2.metric(
+        "Économie d'autoconsommation",
+        f"{format_fr(energy_value_data['annual_self_consumption_saving'], 0)} € / an",
+    )
+    e3.metric(
+        "Revenu du surplus",
+        f"{format_fr(energy_value_data['annual_surplus_revenue'], 0)} € / an",
+    )
+    e4.metric(
+        "Charges annuelles",
+        f"{format_fr(operating_cost_data['total'], 0)} € / an",
+    )
+
+    operating_table = pd.DataFrame(
+        {
+            "Charge annuelle": [
+                "Assurance",
+                "Suivi et maintenance",
+                "Provision onduleurs",
+                "TURPE",
+                "IFER",
+                "Autres charges",
+                "TOTAL",
+            ],
+            "Montant (€ HT/an)": [
+                operating_cost_data["insurance"],
+                operating_cost_data["maintenance"],
+                operating_cost_data["inverter_provision"],
+                operating_cost_data["turpe"],
+                operating_cost_data["ifer"],
+                operating_cost_data["other"],
+                operating_cost_data["total"],
+            ],
+        }
+    )
+
+    st.dataframe(
+        operating_table.style.format(
+            {"Montant (€ HT/an)": "{:,.0f} €"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Projection sur la durée du projet")
+
+    projection_df = financial_projection["table"].copy()
+
+    fig_cashflow = go.Figure()
+    fig_cashflow.add_trace(
+        go.Bar(
+            x=projection_df["Année"],
+            y=projection_df["Flux net (€)"],
+            name="Flux net annuel",
+        )
+    )
+    fig_cashflow.add_trace(
+        go.Scatter(
+            x=projection_df["Année"],
+            y=projection_df["Cumul net (€)"],
+            name="Cumul net",
+            mode="lines+markers",
+            yaxis="y2",
+        )
+    )
+    fig_cashflow.add_hline(
+        y=0,
+        line_dash="dash",
+    )
+    fig_cashflow.update_layout(
+        title="Flux financiers et cumul du projet",
+        xaxis_title="Année",
+        yaxis_title="Flux annuel (€)",
+        yaxis2=dict(
+            title="Cumul (€)",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        ),
+        legend=dict(orientation="h"),
+    )
+    st.plotly_chart(fig_cashflow, use_container_width=True)
+
+    with st.expander("Afficher le détail annuel"):
+        st.dataframe(
+            projection_df.style.format(
+                {
+                    "Économie autoconsommation (€)": "{:,.0f}",
+                    "Revenu surplus (€)": "{:,.0f}",
+                    "Charges annuelles (€)": "{:,.0f}",
+                    "Flux net (€)": "{:,.0f}",
+                    "Flux actualisé (€)": "{:,.0f}",
+                    "Cumul net (€)": "{:,.0f}",
+                    "Cumul actualisé (€)": "{:,.0f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Hypothèses utilisées")
+
+    hypothesis_table = pd.DataFrame(
+        {
+            "Hypothèse": [
+                "Type de tarif électrique",
+                "Prix de vente du surplus",
+                "Puissance étudiée",
+                "Fixation",
+                "Coût équipements et pose",
+                "Coût fixation",
+                "Durée de projection",
+                "Hausse prix électricité",
+                "Dégradation production",
+                "Taux d'actualisation",
+            ],
+            "Valeur": [
+                electricity_tariff_type,
+                f"{surplus_sale_price_eur_kwh:.4f} €/kWh HT",
+                f"{pv_peak_kwp:g} kWc",
+                fixing_type,
+                f"{investment_data['equipment_rate']:.2f} €/Wc",
+                f"{investment_data['fixing_rate']:.2f} €/Wc",
+                f"{financial_horizon_years} ans",
+                f"{electricity_price_increase_percent:.1f} %/an",
+                f"{production_degradation_percent:.1f} %/an",
+                f"{discount_rate_percent:.1f} %",
+            ],
+        }
+    )
+    st.dataframe(
+        hypothesis_table,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ============================================================
 # PROFILS HORAIRES
 # ============================================================
 
@@ -5458,6 +6696,16 @@ with tab_export:
                 "Part totale HC (%)",
                 "Indice optimisation tarifaire CMA (/100)",
                 "Appréciation indice tarifaire",
+                "Investissement brut estimé (€ HT)",
+                "Investissement net estimé (€ HT)",
+                "Charges annuelles estimées (€ HT/an)",
+                "Économie autoconsommation annuelle (€ HT)",
+                "Revenu surplus annuel (€ HT)",
+                "Gain net année 1 (€ HT)",
+                "Temps de retour simple (années)",
+                "VAN du projet (€)",
+                "TRI estimé (%)",
+                "Gain net cumulé sur l'horizon (€)",
                 "Facteur de charge (%)",
                 "Horodatages en doublon",
                 "Jours atypiques",
@@ -5581,6 +6829,24 @@ with tab_export:
                 tariff_score_data["hc_share"],
                 tariff_score_data["score"],
                 tariff_score_data["label"],
+                investment_data["gross_total"],
+                investment_data["net_total"],
+                operating_cost_data["total"],
+                energy_value_data["annual_self_consumption_saving"],
+                energy_value_data["annual_surplus_revenue"],
+                financial_projection["annual_net_gain_year_1"],
+                (
+                    financial_projection["payback_year"]
+                    if not pd.isna(financial_projection["payback_year"])
+                    else ""
+                ),
+                financial_projection["npv"],
+                (
+                    financial_projection["irr"] * 100
+                    if not pd.isna(financial_projection["irr"])
+                    else ""
+                ),
+                financial_projection["total_net_gain"],
                 load_factor,
                 duplicate_count,
                 len(atypical_days),
@@ -5746,6 +7012,57 @@ with tab_export:
         .dt.strftime("%d/%m/%Y %H:%M:%S")
     )
 
+    financial_summary_export = pd.DataFrame(
+        {
+            "Indicateur": [
+                "Puissance étudiée (kWc)",
+                "Type de fixation",
+                "Coût équipements + pose (€/Wc)",
+                "Coût fixation (€/Wc)",
+                "Investissement brut (€ HT)",
+                "Aides déduites (€)",
+                "Investissement net (€ HT)",
+                "Raccordement (€ HT)",
+                "Charges annuelles (€ HT/an)",
+                "Facture annuelle de référence (€ HT)",
+                "Économie autoconsommation (€ HT/an)",
+                "Revenu surplus (€ HT/an)",
+                "Gain net année 1 (€ HT)",
+                "Temps de retour simple (années)",
+                "VAN (€)",
+                "TRI (%)",
+                "Gain net cumulé (€)",
+            ],
+            "Valeur": [
+                pv_peak_kwp,
+                fixing_type,
+                investment_data["equipment_rate"],
+                investment_data["fixing_rate"],
+                investment_data["gross_total"],
+                investment_data["grant_amount"],
+                investment_data["net_total"],
+                connection_data["total"],
+                operating_cost_data["total"],
+                energy_value_data["annual_energy_bill"],
+                energy_value_data["annual_self_consumption_saving"],
+                energy_value_data["annual_surplus_revenue"],
+                financial_projection["annual_net_gain_year_1"],
+                (
+                    financial_projection["payback_year"]
+                    if not pd.isna(financial_projection["payback_year"])
+                    else ""
+                ),
+                financial_projection["npv"],
+                (
+                    financial_projection["irr"] * 100
+                    if not pd.isna(financial_projection["irr"])
+                    else ""
+                ),
+                financial_projection["total_net_gain"],
+            ],
+        }
+    )
+
     excel_bytes = make_excel_export(
         hourly_standardized_export,
         hourly_export,
@@ -5754,6 +7071,8 @@ with tab_export:
         weekday_hour_matrix.round(3),
         tariff_summary_export,
         tariff_detail_export,
+        financial_summary_export,
+        financial_projection["table"],
         summary_df,
     )
 
@@ -5896,6 +7215,8 @@ with tab_export:
         - les consommations mensuelles ;
         - le tableau moyen heure × jour de la semaine ;
         - la synthèse HP/HC hiver et été ;
-        - le détail du classement tarifaire intervalle par intervalle.
+        - le détail du classement tarifaire intervalle par intervalle ;
+        - la synthèse financière du projet ;
+        - la projection annuelle des flux financiers.
         """
     )
