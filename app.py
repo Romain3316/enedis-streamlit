@@ -876,6 +876,25 @@ st.markdown(
 
         [data-testid="stPlotlyChart"] > div {
             background: #FFFFFF !important;
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+
+        [data-testid="stPlotlyChart"] .js-plotly-plot,
+        [data-testid="stPlotlyChart"] .plot-container,
+        [data-testid="stPlotlyChart"] .svg-container {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+
+        /* Chaque bloc Streamlit conserve sa hauteur réelle. */
+        [data-testid="stVerticalBlock"] {
+            min-width: 0 !important;
+        }
+
+        [data-testid="column"] {
+            min-width: 0 !important;
+            overflow: visible !important;
         }
 
         /* Infobulles */
@@ -6076,60 +6095,91 @@ with tab_financial:
         investment_breakdown["Montant_EUR"] > 0
     ]
 
-    inv_col1, inv_col2 = st.columns([1.1, 1])
+    # Affichage en pleine largeur : plus robuste que deux colonnes lorsque
+    # le navigateur applique un zoom ou que la fenêtre est étroite.
+    chart_height = max(
+        380,
+        105 + 58 * len(investment_breakdown),
+    )
 
-    with inv_col1:
-        fig_investment = px.bar(
-            investment_breakdown,
-            x="Montant_EUR",
-            y="Poste",
-            orientation="h",
-            text_auto=".0f",
-            title="Répartition du coût d'investissement",
-            labels={
-                "Montant_EUR": "Montant (€ HT)",
-                "Poste": "",
-            },
-        )
-        fig_investment.update_traces(
-            texttemplate="%{x:,.0f} €",
-            textposition="outside",
-            cliponaxis=False,
-        )
-        st.plotly_chart(
-            fig_investment,
-            use_container_width=True,
-        )
+    fig_investment = px.bar(
+        investment_breakdown,
+        x="Montant_EUR",
+        y="Poste",
+        orientation="h",
+        text_auto=".0f",
+        title="Répartition du coût d'investissement",
+        labels={
+            "Montant_EUR": "Montant (€ HT)",
+            "Poste": "",
+        },
+    )
+    fig_investment.update_traces(
+        texttemplate="%{x:,.0f} €",
+        textposition="outside",
+        cliponaxis=False,
+    )
+    fig_investment.update_layout(
+        height=chart_height,
+        margin=dict(
+            l=210,
+            r=110,
+            t=75,
+            b=65,
+        ),
+        yaxis=dict(
+            automargin=True,
+            categoryorder="total ascending",
+        ),
+        xaxis=dict(
+            automargin=True,
+            rangemode="tozero",
+        ),
+    )
 
-    with inv_col2:
-        investment_table = investment_breakdown.copy()
-        investment_table.columns = ["Poste", "Montant (€ HT)"]
-        total_row = pd.DataFrame(
-            {
-                "Poste": [
-                    "TOTAL BRUT",
-                    "Aides déduites",
-                    "TOTAL NET",
-                ],
-                "Montant (€ HT)": [
-                    investment_data["gross_total"],
-                    -investment_data["grant_amount"],
-                    investment_data["net_total"],
-                ],
-            }
-        )
-        investment_table = pd.concat(
-            [investment_table, total_row],
-            ignore_index=True,
-        )
+    st.plotly_chart(
+        fig_investment,
+        use_container_width=True,
+    )
 
-        st.dataframe(
-            investment_table.style.format(
-                {"Montant (€ HT)": "{:,.0f} €"}
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+    investment_table = investment_breakdown.copy()
+    investment_table.columns = ["Poste", "Montant (€ HT)"]
+    total_row = pd.DataFrame(
+        {
+            "Poste": [
+                "TOTAL BRUT",
+                "Aides déduites",
+                "TOTAL NET",
+            ],
+            "Montant (€ HT)": [
+                investment_data["gross_total"],
+                -investment_data["grant_amount"],
+                investment_data["net_total"],
+            ],
+        }
+    )
+    investment_table = pd.concat(
+        [investment_table, total_row],
+        ignore_index=True,
+    )
+
+    st.dataframe(
+        investment_table.style.format(
+            {"Montant (€ HT)": "{:,.0f} €"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+        height=min(
+            520,
+            42 + 35 * len(investment_table),
+        ),
+    )
+
+    # Séparation explicite pour empêcher tout chevauchement avec le bloc suivant.
+    st.markdown(
+        '<div style="height:22px"></div>',
+        unsafe_allow_html=True,
+    )
 
     st.subheader("Raccordement indicatif")
 
