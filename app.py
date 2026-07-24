@@ -3037,6 +3037,228 @@ def build_financial_projection(
     }
 
 
+
+# ============================================================
+# ASSISTANT MÉTIER CMA — RÈGLES EXPLICITES, SANS IA EXTERNE
+# ============================================================
+
+def build_cma_business_assistant(
+    daylight_share: float,
+    production_period_share: float,
+    self_consumption_rate: float,
+    self_sufficiency_rate: float,
+    pv_surplus_kwh: float,
+    pvgis_production_kwh: float,
+    cma_score_data: dict,
+    tariff_score_data: dict,
+    investment_data: dict,
+    operating_cost_data: dict,
+    financial_projection: dict,
+    roof_renovation_enabled: bool,
+    asbestos_removal_enabled: bool,
+    connection_data: dict,
+    coverage_ratio: float,
+) -> dict:
+    """Produit une synthèse métier traçable à partir de règles explicites."""
+    strengths = []
+    vigilance = []
+    next_steps = []
+    conclusion_parts = []
+
+    # Profil de consommation
+    if production_period_share >= 65:
+        strengths.append(
+            "Une part importante de la consommation intervient pendant "
+            "les périodes de production photovoltaïque."
+        )
+    elif production_period_share >= 45:
+        strengths.append(
+            "La correspondance entre les consommations et la production "
+            "solaire est globalement favorable."
+        )
+    else:
+        vigilance.append(
+            "Une part limitée des consommations coïncide avec la production "
+            "solaire ; le dimensionnement devra rester prudent."
+        )
+
+    # Autoconsommation
+    if self_consumption_rate >= 85:
+        strengths.append(
+            "Le taux d'autoconsommation simulé est très élevé, ce qui limite "
+            "le surplus injecté sur le réseau."
+        )
+    elif self_consumption_rate >= 65:
+        strengths.append(
+            "Le taux d'autoconsommation simulé est satisfaisant."
+        )
+    else:
+        vigilance.append(
+            "Le surplus photovoltaïque paraît important ; une puissance "
+            "inférieure ou un déplacement d'usages peut être étudié."
+        )
+
+    # Autoproduction
+    if self_sufficiency_rate >= 35:
+        strengths.append(
+            "Le projet pourrait couvrir une part significative des besoins "
+            "électriques du site."
+        )
+    elif self_sufficiency_rate < 15:
+        vigilance.append(
+            "Le taux d'autoproduction reste faible : le réseau demeurera la "
+            "source principale d'électricité."
+        )
+
+    # Surplus
+    surplus_ratio = (
+        pv_surplus_kwh / pvgis_production_kwh * 100
+        if pvgis_production_kwh and not pd.isna(pvgis_production_kwh)
+        else 0
+    )
+    if surplus_ratio > 35:
+        vigilance.append(
+            f"Environ {format_fr(surplus_ratio, 0)} % de la production "
+            "simulée serait injectée en surplus."
+        )
+
+    # Finance
+    payback = financial_projection.get("payback_year", np.nan)
+    npv = financial_projection.get("npv", np.nan)
+    irr = financial_projection.get("irr", np.nan)
+
+    if not pd.isna(payback):
+        if payback <= 8:
+            strengths.append(
+                f"Le temps de retour simple est favorable, estimé à "
+                f"{format_fr(payback, 1)} ans."
+            )
+        elif payback <= 12:
+            conclusion_parts.append(
+                f"Le temps de retour simple est estimé à "
+                f"{format_fr(payback, 1)} ans."
+            )
+        else:
+            vigilance.append(
+                f"Le temps de retour simple est relativement long "
+                f"({format_fr(payback, 1)} ans)."
+            )
+    else:
+        vigilance.append(
+            "L'investissement n'est pas amorti sur l'horizon de projection."
+        )
+
+    if not pd.isna(npv) and npv < 0:
+        vigilance.append(
+            "La valeur actuelle nette est négative avec les hypothèses "
+            "retenues."
+        )
+    elif not pd.isna(npv) and npv > 0:
+        strengths.append(
+            "La valeur actuelle nette est positive avec les hypothèses "
+            "retenues."
+        )
+
+    if not pd.isna(irr):
+        conclusion_parts.append(
+            f"Le TRI indicatif ressort à {format_fr(irr * 100, 1)} %."
+        )
+
+    # Données et contraintes
+    if coverage_ratio < 0.90:
+        vigilance.append(
+            "La période de données couvre moins d'une année complète ; "
+            "l'annualisation doit être interprétée avec prudence."
+        )
+
+    if roof_renovation_enabled:
+        vigilance.append(
+            "Le scénario intègre une rénovation de couverture, poste à "
+            "confirmer par devis."
+        )
+        next_steps.append(
+            "Faire établir un diagnostic de toiture et un devis de couverture."
+        )
+
+    if asbestos_removal_enabled:
+        vigilance.append(
+            "Un coût indicatif de désamiantage est intégré au scénario."
+        )
+        next_steps.append(
+            "Faire confirmer la présence d'amiante et le protocole de retrait."
+        )
+
+    if connection_data.get("total", 0) > 0:
+        next_steps.append(
+            "Demander une proposition de raccordement afin de sécuriser le "
+            "coût réel et les délais."
+        )
+
+    if investment_data.get("structural_study_cost", 0) > 0:
+        next_steps.append(
+            "Faire valider la capacité portante de la charpente et de la toiture."
+        )
+
+    next_steps.extend(
+        [
+            "Comparer plusieurs puissances et plusieurs devis d'installateurs qualifiés.",
+            "Vérifier les aides, la fiscalité et le mode de financement.",
+            "Actualiser les prix d'achat et de vente de l'électricité avant décision.",
+        ]
+    )
+
+    score = float(cma_score_data.get("score", 0))
+    if score >= 80 and (pd.isna(payback) or payback <= 10):
+        headline = "Profil très favorable à approfondir"
+        status = "Très favorable"
+        color = "#2E8B57"
+    elif score >= 65:
+        headline = "Projet globalement favorable"
+        status = "Favorable"
+        color = "#69A84F"
+    elif score >= 45:
+        headline = "Projet intéressant sous conditions"
+        status = "À approfondir"
+        color = "#E0A800"
+    else:
+        headline = "Projet nécessitant des ajustements"
+        status = "Vigilance"
+        color = "#E67E22"
+
+    conclusion = (
+        f"{headline}. "
+        + " ".join(conclusion_parts)
+        + " Les résultats restent indicatifs et doivent être confirmés "
+        "par une étude technique, des devis et une analyse financière complète."
+    )
+
+    # Déduplication tout en conservant l'ordre.
+    strengths = list(dict.fromkeys(strengths))
+    vigilance = list(dict.fromkeys(vigilance))
+    next_steps = list(dict.fromkeys(next_steps))
+
+    return {
+        "headline": headline,
+        "status": status,
+        "color": color,
+        "conclusion": conclusion,
+        "strengths": strengths,
+        "vigilance": vigilance,
+        "next_steps": next_steps,
+        "pv_score": cma_score_data.get("score", 0),
+        "tariff_score": tariff_score_data.get("score", 0),
+    }
+
+
+def assistant_html_list(items: list[str], icon: str) -> str:
+    if not items:
+        return "<p>Aucun élément particulier identifié.</p>"
+    return "".join(
+        f"<div style='margin:7px 0'>{icon} {item}</div>"
+        for item in items
+    )
+
+
 def safe_pdf_text(value) -> str:
     if value is None:
         return ""
@@ -3172,6 +3394,18 @@ def create_cma_pdf_report(
     tariff_summary_df: pd.DataFrame,
     tariff_score_data: dict,
     hc_ranges: list[tuple],
+    investment_data: dict,
+    connection_data: dict,
+    operating_cost_data: dict,
+    energy_value_data: dict,
+    financial_projection: dict,
+    business_assistant: dict,
+    financial_horizon_years: int,
+    electricity_tariff_type: str,
+    surplus_sale_price_eur_kwh: float,
+    electricity_price_increase_percent: float,
+    production_degradation_percent: float,
+    discount_rate_percent: float,
     monthly_df: pd.DataFrame,
     weekday_hour_matrix: pd.DataFrame,
     hourly_df: pd.DataFrame,
@@ -3750,8 +3984,262 @@ def create_cma_pdf_report(
 
     story.append(PageBreak())
 
+    # Étude financière
+    story.append(Paragraph("5. Étude financière indicative", styles["CMA_H1"]))
+    story.append(
+        Paragraph(
+            safe_pdf_text(business_assistant["conclusion"]),
+            styles["CMA_Body"],
+        )
+    )
+
+    finance_kpis = [
+        [
+            Paragraph("Investissement net", styles["CMA_KPI_Label"]),
+            Paragraph(
+                f"{format_fr(investment_data['net_total'], 0)} € HT",
+                styles["CMA_KPI_Value"],
+            ),
+            Paragraph("Gain net année 1", styles["CMA_KPI_Label"]),
+            Paragraph(
+                f"{format_fr(financial_projection['annual_net_gain_year_1'], 0)} €",
+                styles["CMA_KPI_Value"],
+            ),
+        ],
+        [
+            Paragraph("Temps de retour", styles["CMA_KPI_Label"]),
+            Paragraph(
+                (
+                    f"{format_fr(financial_projection['payback_year'], 1)} ans"
+                    if not pd.isna(financial_projection["payback_year"])
+                    else "Au-delà de l'horizon"
+                ),
+                styles["CMA_KPI_Value"],
+            ),
+            Paragraph("VAN", styles["CMA_KPI_Label"]),
+            Paragraph(
+                f"{format_fr(financial_projection['npv'], 0)} €",
+                styles["CMA_KPI_Value"],
+            ),
+        ],
+        [
+            Paragraph("TRI indicatif", styles["CMA_KPI_Label"]),
+            Paragraph(
+                (
+                    f"{format_fr(financial_projection['irr'] * 100, 1)} %"
+                    if not pd.isna(financial_projection["irr"])
+                    else "Non calculable"
+                ),
+                styles["CMA_KPI_Value"],
+            ),
+            Paragraph(
+                f"Gain cumulé à {financial_horizon_years} ans",
+                styles["CMA_KPI_Label"],
+            ),
+            Paragraph(
+                f"{format_fr(financial_projection['total_net_gain'], 0)} €",
+                styles["CMA_KPI_Value"],
+            ),
+        ],
+    ]
+    finance_kpi_table = Table(
+        finance_kpis,
+        colWidths=[3.6 * cm, 4.3 * cm, 3.6 * cm, 4.3 * cm],
+    )
+    finance_kpi_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), light_grey),
+                ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#D8E0E8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    story.append(finance_kpi_table)
+    story.append(Spacer(1, 0.35 * cm))
+
+    story.append(Paragraph("Répartition des coûts", styles["CMA_H2"]))
+    cost_rows = [["Poste", "Montant", "Part"]]
+    cost_items = [
+        ("Modules, onduleur et pose", investment_data["equipment_cost"]),
+        ("Système de fixation", investment_data["fixing_cost"]),
+        ("Surcoût ERP / ICPE", investment_data["erp_surcharge_cost"]),
+        ("Étude structure", investment_data["structural_study_cost"]),
+        ("Rénovation de couverture", investment_data["roof_cost"]),
+        ("Désamiantage", investment_data["asbestos_cost"]),
+        ("Raccordement", investment_data["connection_cost"]),
+        ("Autres coûts", investment_data["other_investment_costs"]),
+    ]
+    positive_costs = [
+        (label, amount)
+        for label, amount in cost_items
+        if amount > 0
+    ]
+    gross_cost = max(investment_data["gross_total"], 1)
+    for label, amount in positive_costs:
+        cost_rows.append(
+            [
+                label,
+                f"{format_fr(amount, 0)} €",
+                f"{format_fr(amount / gross_cost * 100, 1)} %",
+            ]
+        )
+    cost_rows.extend(
+        [
+            ["Investissement brut", f"{format_fr(investment_data['gross_total'], 0)} €", "100 %"],
+            ["Aides déduites", f"- {format_fr(investment_data['grant_amount'], 0)} €", ""],
+            ["Investissement net", f"{format_fr(investment_data['net_total'], 0)} €", ""],
+        ]
+    )
+    cost_table = Table(
+        cost_rows,
+        colWidths=[9.0 * cm, 4.0 * cm, 2.8 * cm],
+    )
+    cost_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(cost_table)
+
+    story.append(PageBreak())
+    story.append(
+        Paragraph(
+            f"6. Prévisionnel financier sur {financial_horizon_years} ans",
+            styles["CMA_H1"],
+        )
+    )
+
+    projection_table_df = financial_projection["table"].copy()
+    selected_years = sorted(
+        set(
+            [
+                1,
+                min(5, financial_horizon_years),
+                min(10, financial_horizon_years),
+                min(15, financial_horizon_years),
+                financial_horizon_years,
+            ]
+        )
+    )
+    forecast_rows = [
+        ["Année", "Flux net", "Cumul net", "Cumul actualisé"]
+    ]
+    for year in selected_years:
+        row = projection_table_df[
+            projection_table_df["Année"] == year
+        ].iloc[0]
+        forecast_rows.append(
+            [
+                str(year),
+                f"{format_fr(row['Flux net (€)'], 0)} €",
+                f"{format_fr(row['Cumul net (€)'], 0)} €",
+                f"{format_fr(row['Cumul actualisé (€)'], 0)} €",
+            ]
+        )
+    forecast_table = Table(
+        forecast_rows,
+        colWidths=[2.4 * cm, 4.4 * cm, 4.5 * cm, 4.5 * cm],
+    )
+    forecast_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(forecast_table)
+    story.append(Spacer(1, 0.35 * cm))
+
+    assumptions_rows = [
+        ["Hypothèse", "Valeur"],
+        ["Tarification électrique", safe_pdf_text(electricity_tariff_type)],
+        ["Vente du surplus", f"{format_fr(surplus_sale_price_eur_kwh, 4)} €/kWh HT"],
+        ["Hausse du prix de l'électricité", f"{format_fr(electricity_price_increase_percent, 1)} %/an"],
+        ["Dégradation de production", f"{format_fr(production_degradation_percent, 1)} %/an"],
+        ["Taux d'actualisation", f"{format_fr(discount_rate_percent, 1)} %"],
+        ["Charges annuelles initiales", f"{format_fr(operating_cost_data['total'], 0)} € HT/an"],
+    ]
+    assumptions_table = Table(
+        assumptions_rows,
+        colWidths=[9.2 * cm, 6.6 * cm],
+    )
+    assumptions_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D8E0E8")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(Paragraph("Hypothèses financières", styles["CMA_H2"]))
+    story.append(assumptions_table)
+
+    story.append(PageBreak())
+    story.append(Paragraph("7. Synthèse de l'assistant CMA", styles["CMA_H1"]))
+    story.append(
+        Paragraph(
+            f"<b>{safe_pdf_text(business_assistant['headline'])}</b>",
+            styles["CMA_H2"],
+        )
+    )
+    story.append(
+        Paragraph(
+            safe_pdf_text(business_assistant["conclusion"]),
+            styles["CMA_Body"],
+        )
+    )
+    story.append(Paragraph("Points favorables", styles["CMA_H2"]))
+    for item in business_assistant["strengths"]:
+        story.append(
+            Paragraph("• " + safe_pdf_text(item), styles["CMA_Body"])
+        )
+    story.append(Paragraph("Points de vigilance", styles["CMA_H2"]))
+    for item in business_assistant["vigilance"]:
+        story.append(
+            Paragraph("• " + safe_pdf_text(item), styles["CMA_Body"])
+        )
+    story.append(Paragraph("Prochaines étapes", styles["CMA_H2"]))
+    for number, item in enumerate(
+        business_assistant["next_steps"],
+        start=1,
+    ):
+        story.append(
+            Paragraph(
+                f"{number}. {safe_pdf_text(item)}",
+                styles["CMA_Body"],
+            )
+        )
+
+    story.append(PageBreak())
+
     # Explications
-    story.append(Paragraph("5. Comment lire les résultats ?", styles["CMA_H1"]))
+    story.append(Paragraph("8. Comment lire les résultats ?", styles["CMA_H1"]))
     explanations = [
         (
             "Autoconsommation",
@@ -3779,7 +4267,7 @@ def create_cma_pdf_report(
         story.append(Paragraph(title, styles["CMA_H2"]))
         story.append(Paragraph(text, styles["CMA_Body"]))
 
-    story.append(Paragraph("6. Recommandations", styles["CMA_H1"]))
+    story.append(Paragraph("9. Recommandations générales", styles["CMA_H1"]))
     recommendations = [
         "Vérifier la surface réellement disponible et les zones d'ombrage.",
         "Faire contrôler l'état et la capacité portante de la toiture.",
@@ -3793,13 +4281,13 @@ def create_cma_pdf_report(
     ]
     story.append(Table(recommendation_rows, colWidths=[15.8 * cm]))
 
-    story.append(Paragraph("7. Limites du pré-diagnostic", styles["CMA_H1"]))
+    story.append(Paragraph("10. Limites du pré-diagnostic", styles["CMA_H1"]))
     story.append(
         Paragraph(
             "Ce rapport repose sur les données Enedis importées et sur une "
             "simulation PVGIS. Il ne vérifie pas la structure du bâtiment, "
             "les contraintes d'urbanisme, le raccordement, les ombrages fins, "
-            "les coûts d'installation, la fiscalité ou la rentabilité financière. "
+            "les conditions fiscales ou le financement bancaire. "
             "Les résultats doivent être confirmés dans le cadre d'une étude complète.",
             styles["CMA_Body"],
         )
@@ -4363,230 +4851,240 @@ with st.sidebar:
         format="%.4f",
     )
 
-    st.markdown("### Investissement")
-
-    fixing_type = st.selectbox(
-        "Système de fixation",
-        list(PV_FIXING_COSTS_EUR_WC.keys()),
-    )
-
-    erp_icpe_surcharge = st.checkbox(
-        "Projet ERP ou ICPE : ajouter 0,10 €/Wc",
-        value=False,
-    )
-
-    structural_study_cost = st.number_input(
-        "Étude structure charpente/toiture (€ HT)",
-        min_value=0.0,
-        max_value=100000.0,
-        value=2000.0,
-        step=250.0,
-    )
-
-    roof_renovation_enabled = st.checkbox(
-        "Intégrer une rénovation de couverture",
-        value=False,
-    )
-
-    roof_type = st.selectbox(
-        "Type de couverture à rénover",
-        list(ROOF_RENOVATION_COSTS_EUR_M2.keys()),
-        disabled=not roof_renovation_enabled,
-    )
-
-    roof_area_m2 = st.number_input(
-        "Surface de couverture concernée (m²)",
-        min_value=0.0,
-        max_value=100000.0,
-        value=0.0,
-        step=10.0,
-        disabled=not roof_renovation_enabled,
-    )
-
-    asbestos_removal_enabled = st.checkbox(
-        "Prévoir un désamiantage à 60 €/m²",
-        value=False,
-        disabled=not roof_renovation_enabled,
-    )
-
-    st.markdown("### Raccordement")
-
-    connection_mode = st.selectbox(
-        "Scénario indicatif de raccordement",
-        [
-            "Aucun / inférieur ou égal à 36 kWc",
-            "Branchement BT avec extension",
-            "Branchement complet C4",
-            "Création poste BT-HTA",
-        ],
-    )
-
-    public_extension_length_m = st.number_input(
-        "Longueur d'extension publique (m)",
-        min_value=0.0,
-        max_value=10000.0,
-        value=0.0,
-        step=5.0,
-        disabled=(
-            connection_mode
-            not in [
-                "Branchement BT avec extension",
-                "Création poste BT-HTA",
-            ]
-        ),
-    )
-
-    apply_enedis_reduction = st.checkbox(
-        "Appliquer une réfaction Enedis indicative de 60 %",
-        value=True,
-        disabled=pv_peak_kwp <= 36,
-        help=(
-            "Hypothèse indicative issue du document transmis. "
-            "Elle doit être confirmée par une proposition de raccordement."
-        ),
-    )
-
-    private_trench_length_m = st.number_input(
-        "Tranchée interne privée (m)",
-        min_value=0.0,
-        max_value=10000.0,
-        value=0.0,
-        step=5.0,
-    )
-
-    include_private_hta_post = st.checkbox(
-        "Création d'un poste privé HTA/BT",
-        value=False,
-    )
-
-    include_decoupling_cell = st.checkbox(
-        "Ajouter une cellule de découplage",
-        value=False,
-    )
-
-    other_investment_costs = st.number_input(
-        "Autres coûts d'investissement (€ HT)",
-        min_value=0.0,
-        max_value=10000000.0,
-        value=0.0,
-        step=500.0,
-    )
-
-    grant_amount = st.number_input(
-        "Aides ou subventions déduites (€)",
-        min_value=0.0,
-        max_value=10000000.0,
-        value=0.0,
-        step=500.0,
-    )
-
-    st.markdown("### Charges annuelles")
-
-    insurance_rate_percent = st.slider(
-        "Assurance multirisque et perte d'exploitation",
-        min_value=0.0,
-        max_value=2.0,
-        value=0.5,
-        step=0.1,
-        format="%.1f %% de l'investissement",
-    )
-
-    maintenance_eur_kwp = st.slider(
-        "Suivi et maintenance",
-        min_value=0.0,
-        max_value=30.0,
-        value=10.5,
-        step=0.5,
-        format="%.1f €/kWc/an",
-    )
-
-    inverter_provision_eur_kwp = st.slider(
-        "Provision remplacement onduleurs",
-        min_value=0.0,
-        max_value=15.0,
-        value=3.0,
-        step=0.5,
-        format="%.1f €/kWc/an",
-    )
-
-    ifer_rate_eur_kwp = st.number_input(
-        "Tarif IFER si puissance > 100 kWc (€/kWc/an)",
-        min_value=0.0,
-        max_value=100.0,
-        value=3.542,
-        step=0.001,
-        format="%.3f",
-    )
-
-    other_annual_costs = st.number_input(
-        "Autres charges annuelles (€ HT/an)",
-        min_value=0.0,
-        max_value=1000000.0,
-        value=0.0,
-        step=100.0,
-    )
-
-    st.markdown("### Projection")
-
-    financial_horizon_years = st.slider(
-        "Durée de projection",
-        min_value=5,
-        max_value=40,
-        value=20,
-        step=1,
-        format="%d ans",
-    )
-
-    electricity_price_increase_percent = st.slider(
-        "Hausse annuelle du prix d'achat",
-        min_value=0.0,
-        max_value=10.0,
-        value=2.0,
-        step=0.1,
-        format="%.1f %%",
-    )
-
-    surplus_price_increase_percent = st.slider(
-        "Évolution annuelle du tarif de surplus",
-        min_value=-5.0,
-        max_value=10.0,
-        value=0.0,
-        step=0.1,
-        format="%.1f %%",
-    )
-
-    production_degradation_percent = st.slider(
-        "Dégradation annuelle de la production",
-        min_value=0.0,
-        max_value=2.0,
-        value=0.5,
-        step=0.1,
-        format="%.1f %%",
-    )
-
-    operating_cost_increase_percent = st.slider(
-        "Hausse annuelle des charges",
-        min_value=0.0,
-        max_value=10.0,
-        value=2.0,
-        step=0.1,
-        format="%.1f %%",
-    )
-
-    discount_rate_percent = st.slider(
-        "Taux d'actualisation",
-        min_value=0.0,
-        max_value=15.0,
-        value=4.0,
-        step=0.1,
-        format="%.1f %%",
-    )
-
     st.caption(
-        "Les coûts sont des ordres de grandeur HT issus des documents "
-        "métier transmis. Ils doivent être confirmés par des devis, une "
-        "étude structure et une proposition de raccordement Enedis."
+        "Les paramètres détaillés d'investissement, de raccordement et de "
+        "projection sont regroupés dans le bouton ci-dessous."
     )
+
+    with st.popover(
+        "⚙️ Paramètres financiers avancés",
+        use_container_width=True,
+    ):
+        st.markdown("### Investissement")
+
+        fixing_type = st.selectbox(
+            "Système de fixation",
+            list(PV_FIXING_COSTS_EUR_WC.keys()),
+        )
+
+        erp_icpe_surcharge = st.checkbox(
+            "Projet ERP ou ICPE : ajouter 0,10 €/Wc",
+            value=False,
+        )
+
+        structural_study_cost = st.number_input(
+            "Étude structure charpente/toiture (€ HT)",
+            min_value=0.0,
+            max_value=100000.0,
+            value=2000.0,
+            step=250.0,
+        )
+
+        roof_renovation_enabled = st.checkbox(
+            "Intégrer une rénovation de couverture",
+            value=False,
+        )
+
+        roof_type = st.selectbox(
+            "Type de couverture à rénover",
+            list(ROOF_RENOVATION_COSTS_EUR_M2.keys()),
+            disabled=not roof_renovation_enabled,
+        )
+
+        roof_area_m2 = st.number_input(
+            "Surface de couverture concernée (m²)",
+            min_value=0.0,
+            max_value=100000.0,
+            value=0.0,
+            step=10.0,
+            disabled=not roof_renovation_enabled,
+        )
+
+        asbestos_removal_enabled = st.checkbox(
+            "Prévoir un désamiantage à 60 €/m²",
+            value=False,
+            disabled=not roof_renovation_enabled,
+        )
+
+        st.markdown("### Raccordement")
+
+        connection_mode = st.selectbox(
+            "Scénario indicatif de raccordement",
+            [
+                "Aucun / inférieur ou égal à 36 kWc",
+                "Branchement BT avec extension",
+                "Branchement complet C4",
+                "Création poste BT-HTA",
+            ],
+        )
+
+        public_extension_length_m = st.number_input(
+            "Longueur d'extension publique (m)",
+            min_value=0.0,
+            max_value=10000.0,
+            value=0.0,
+            step=5.0,
+            disabled=(
+                connection_mode
+                not in [
+                    "Branchement BT avec extension",
+                    "Création poste BT-HTA",
+                ]
+            ),
+        )
+
+        apply_enedis_reduction = st.checkbox(
+            "Appliquer une réfaction Enedis indicative de 60 %",
+            value=True,
+            disabled=pv_peak_kwp <= 36,
+            help=(
+                "Hypothèse indicative issue du document transmis. "
+                "Elle doit être confirmée par une proposition de raccordement."
+            ),
+        )
+
+        private_trench_length_m = st.number_input(
+            "Tranchée interne privée (m)",
+            min_value=0.0,
+            max_value=10000.0,
+            value=0.0,
+            step=5.0,
+        )
+
+        include_private_hta_post = st.checkbox(
+            "Création d'un poste privé HTA/BT",
+            value=False,
+        )
+
+        include_decoupling_cell = st.checkbox(
+            "Ajouter une cellule de découplage",
+            value=False,
+        )
+
+        other_investment_costs = st.number_input(
+            "Autres coûts d'investissement (€ HT)",
+            min_value=0.0,
+            max_value=10000000.0,
+            value=0.0,
+            step=500.0,
+        )
+
+        grant_amount = st.number_input(
+            "Aides ou subventions déduites (€)",
+            min_value=0.0,
+            max_value=10000000.0,
+            value=0.0,
+            step=500.0,
+        )
+
+        st.markdown("### Charges annuelles")
+
+        insurance_rate_percent = st.slider(
+            "Assurance multirisque et perte d'exploitation",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.5,
+            step=0.1,
+            format="%.1f %% de l'investissement",
+        )
+
+        maintenance_eur_kwp = st.slider(
+            "Suivi et maintenance",
+            min_value=0.0,
+            max_value=30.0,
+            value=10.5,
+            step=0.5,
+            format="%.1f €/kWc/an",
+        )
+
+        inverter_provision_eur_kwp = st.slider(
+            "Provision remplacement onduleurs",
+            min_value=0.0,
+            max_value=15.0,
+            value=3.0,
+            step=0.5,
+            format="%.1f €/kWc/an",
+        )
+
+        ifer_rate_eur_kwp = st.number_input(
+            "Tarif IFER si puissance > 100 kWc (€/kWc/an)",
+            min_value=0.0,
+            max_value=100.0,
+            value=3.542,
+            step=0.001,
+            format="%.3f",
+        )
+
+        other_annual_costs = st.number_input(
+            "Autres charges annuelles (€ HT/an)",
+            min_value=0.0,
+            max_value=1000000.0,
+            value=0.0,
+            step=100.0,
+        )
+
+        st.markdown("### Projection")
+
+        financial_horizon_years = st.slider(
+            "Durée de projection",
+            min_value=5,
+            max_value=40,
+            value=20,
+            step=1,
+            format="%d ans",
+        )
+
+        electricity_price_increase_percent = st.slider(
+            "Hausse annuelle du prix d'achat",
+            min_value=0.0,
+            max_value=10.0,
+            value=2.0,
+            step=0.1,
+            format="%.1f %%",
+        )
+
+        surplus_price_increase_percent = st.slider(
+            "Évolution annuelle du tarif de surplus",
+            min_value=-5.0,
+            max_value=10.0,
+            value=0.0,
+            step=0.1,
+            format="%.1f %%",
+        )
+
+        production_degradation_percent = st.slider(
+            "Dégradation annuelle de la production",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.5,
+            step=0.1,
+            format="%.1f %%",
+        )
+
+        operating_cost_increase_percent = st.slider(
+            "Hausse annuelle des charges",
+            min_value=0.0,
+            max_value=10.0,
+            value=2.0,
+            step=0.1,
+            format="%.1f %%",
+        )
+
+        discount_rate_percent = st.slider(
+            "Taux d'actualisation",
+            min_value=0.0,
+            max_value=15.0,
+            value=4.0,
+            step=0.1,
+            format="%.1f %%",
+        )
+
+        st.caption(
+            "Les coûts sont des ordres de grandeur HT issus des documents "
+            "métier transmis. Ils doivent être confirmés par des devis, une "
+            "étude structure et une proposition de raccordement Enedis."
+        )
+
 
 
 filtered_df = filter_period(
@@ -4882,6 +5380,24 @@ financial_projection = build_financial_projection(
         operating_cost_increase_percent
     ),
     discount_rate_percent=discount_rate_percent,
+)
+
+business_assistant = build_cma_business_assistant(
+    daylight_share=daylight_share,
+    production_period_share=production_period_share,
+    self_consumption_rate=self_consumption_rate,
+    self_sufficiency_rate=self_sufficiency_rate,
+    pv_surplus_kwh=pv_surplus_kwh,
+    pvgis_production_kwh=pvgis_production_kwh,
+    cma_score_data=cma_score_data,
+    tariff_score_data=tariff_score_data,
+    investment_data=investment_data,
+    operating_cost_data=operating_cost_data,
+    financial_projection=financial_projection,
+    roof_renovation_enabled=roof_renovation_enabled,
+    asbestos_removal_enabled=asbestos_removal_enabled,
+    connection_data=connection_data,
+    coverage_ratio=coverage_ratio,
 )
 
 load_factor = (
@@ -6015,6 +6531,65 @@ with tab_financial:
             "restent néanmoins consultables."
         )
 
+    st.markdown(
+        f"""
+        <div class="score-card" style="--score-color:{business_assistant['color']};">
+            <div class="score-circle">
+                <div class="score-number">{cma_score_data['score']:.0f}</div>
+                <div class="score-total">score PV / 100</div>
+            </div>
+            <div>
+                <div class="score-title">
+                    Assistant CMA — {business_assistant['headline']}
+                </div>
+                <p class="score-text">{business_assistant['conclusion']}</p>
+                {render_status_pill(
+                    business_assistant['status'],
+                    business_assistant['color'],
+                )}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    assistant_col1, assistant_col2 = st.columns(2)
+
+    with assistant_col1:
+        st.markdown(
+            f"""
+            <div class="pedagogy-card">
+                <strong>✅ Points favorables</strong><br><br>
+                {assistant_html_list(
+                    business_assistant['strengths'],
+                    '•',
+                )}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with assistant_col2:
+        st.markdown(
+            f"""
+            <div class="pedagogy-card">
+                <strong>⚠️ Points de vigilance</strong><br><br>
+                {assistant_html_list(
+                    business_assistant['vigilance'],
+                    '•',
+                )}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("🧭 Prochaines étapes recommandées"):
+        for step_number, step_text in enumerate(
+            business_assistant["next_steps"],
+            start=1,
+        ):
+            st.markdown(f"**{step_number}.** {step_text}")
+
     f1, f2, f3, f4 = st.columns(4)
 
     f1.metric(
@@ -6756,6 +7331,8 @@ with tab_export:
                 "VAN du projet (€)",
                 "TRI estimé (%)",
                 "Gain net cumulé sur l'horizon (€)",
+                "Synthèse assistant CMA",
+                "Statut assistant CMA",
                 "Facteur de charge (%)",
                 "Horodatages en doublon",
                 "Jours atypiques",
@@ -6897,6 +7474,8 @@ with tab_export:
                     else ""
                 ),
                 financial_projection["total_net_gain"],
+                business_assistant["conclusion"],
+                business_assistant["status"],
                 load_factor,
                 duplicate_count,
                 len(atypical_days),
@@ -7178,6 +7757,22 @@ with tab_export:
                 tariff_summary_df=tariff_summary_df,
                 tariff_score_data=tariff_score_data,
                 hc_ranges=hc_ranges,
+                investment_data=investment_data,
+                connection_data=connection_data,
+                operating_cost_data=operating_cost_data,
+                energy_value_data=energy_value_data,
+                financial_projection=financial_projection,
+                business_assistant=business_assistant,
+                financial_horizon_years=financial_horizon_years,
+                electricity_tariff_type=electricity_tariff_type,
+                surplus_sale_price_eur_kwh=surplus_sale_price_eur_kwh,
+                electricity_price_increase_percent=(
+                    electricity_price_increase_percent
+                ),
+                production_degradation_percent=(
+                    production_degradation_percent
+                ),
+                discount_rate_percent=discount_rate_percent,
                 monthly_df=monthly_df,
                 weekday_hour_matrix=weekday_hour_matrix,
                 hourly_df=hourly_df,
