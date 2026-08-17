@@ -1491,6 +1491,28 @@ def enrich_energy_data(
     return result, message
 
 
+def add_consumption_period_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute le début et le milieu de chaque intervalle de consommation.
+
+    Convention Enedis : ``Horodate`` correspond à la FIN de l'intervalle.
+    Exemple en pas de 30 min : la valeur horodatée 00:00 couvre 23:30 -> 00:00.
+    Pour les regroupements calendaires (jour/mois/année), l'intervalle est donc
+    rattaché à sa date/heure de début.
+    """
+    result = df.copy()
+    if "Duree_h" not in result.columns:
+        result["Duree_h"] = 1.0
+
+    durations = pd.to_numeric(result["Duree_h"], errors="coerce").fillna(1.0)
+    result["Horodate_debut"] = (
+        result["Horodate"] - pd.to_timedelta(durations, unit="h")
+    )
+    result["Horodate_milieu"] = (
+        result["Horodate"] - pd.to_timedelta(durations / 2, unit="h")
+    )
+    return result
+
+
 def filter_period(
     df: pd.DataFrame,
     period_mode: str,
@@ -1498,55 +1520,59 @@ def filter_period(
     start_date,
     end_date,
 ) -> pd.DataFrame:
-    result = df.copy()
+    result = add_consumption_period_columns(df)
+    reference = result["Horodate_debut"]
 
     if period_mode == "Année" and selected_year is not None:
-        result = result[result["Horodate"].dt.year == selected_year]
+        result = result[reference.dt.year == selected_year]
 
     elif period_mode == "Période personnalisée":
         start_timestamp = pd.Timestamp(start_date)
         end_exclusive = pd.Timestamp(end_date) + pd.Timedelta(days=1)
-
         result = result[
-            (result["Horodate"] >= start_timestamp)
-            & (result["Horodate"] < end_exclusive)
+            (reference >= start_timestamp)
+            & (reference < end_exclusive)
         ]
 
     return result.copy()
 
 
 def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
-    hourly = df.copy()
+    hourly = add_consumption_period_columns(df)
 
-    # Convention Enedis : l'horodatage correspond à la FIN de l'intervalle.
-    # Ainsi, pour un pas de 30 minutes :
-    #   08:30 + 09:00 = heure se terminant à 09:00.
-    # dt.ceil("h") conserve les heures rondes et rattache 08:30 à 09:00.
-    hourly["Horodate_heure"] = hourly["Horodate"].dt.ceil("h")
+    # L'horodatage source marque la FIN du pas Enedis. On agrège donc vers
+    # l'heure de fin : 23:30 + 00:00 forment l'heure 23:00 -> 00:00.
+    hourly["Horodate_heure_fin"] = hourly["Horodate"].dt.ceil("h")
     hourly["Puissance_ponderee"] = (
         hourly["Puissance_kW"] * hourly["Duree_h"]
     )
 
     hourly = (
-        hourly.groupby("Horodate_heure", as_index=False)
+        hourly.groupby("Horodate_heure_fin", as_index=False)
         .agg(
             Energie_kWh=("Energie_kWh", "sum"),
             Puissance_ponderee=("Puissance_ponderee", "sum"),
             Duree_totale_h=("Duree_h", "sum"),
             Nombre_points=("Valeur", "size"),
         )
-        .rename(columns={"Horodate_heure": "Horodate"})
+        .rename(columns={"Horodate_heure_fin": "Horodate"})
         .sort_values("Horodate")
         .reset_index(drop=True)
     )
 
-    hourly["Puissance_kW"] = (
-        hourly["Puissance_ponderee"] / hourly["Duree_totale_h"]
+    hourly["Puissance_kW"] = np.where(
+        hourly["Duree_totale_h"] > 0,
+        hourly["Puissance_ponderee"] / hourly["Duree_totale_h"],
+        np.nan,
     )
+    hourly["Horodate_debut"] = hourly["Horodate"] - pd.Timedelta(hours=1)
+    hourly["Horodate_milieu"] = hourly["Horodate"] - pd.Timedelta(minutes=30)
 
     return hourly[
         [
             "Horodate",
+            "Horodate_debut",
+            "Horodate_milieu",
             "Energie_kWh",
             "Puissance_kW",
             "Nombre_points",
@@ -1555,8 +1581,8 @@ def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_daily_data(df: pd.DataFrame) -> pd.DataFrame:
-    daily = df.copy()
-    daily["Date"] = daily["Horodate"].dt.normalize()
+    daily = add_consumption_period_columns(df)
+    daily["Date"] = daily["Horodate_debut"].dt.normalize()
 
     daily = (
         daily.groupby("Date", as_index=False)
@@ -1575,16 +1601,13 @@ def build_daily_data(df: pd.DataFrame) -> pd.DataFrame:
     daily["Année"] = daily["Date"].dt.year
     daily["Mois_num"] = daily["Date"].dt.month
     daily["Mois"] = daily["Mois_num"].map(MONTHS)
-
     return daily
 
 
 def build_monthly_data(df: pd.DataFrame) -> pd.DataFrame:
-    monthly = df.copy()
+    monthly = add_consumption_period_columns(df)
     monthly["Mois_date"] = (
-        monthly["Horodate"]
-        .dt.to_period("M")
-        .dt.to_timestamp()
+        monthly["Horodate_debut"].dt.to_period("M").dt.to_timestamp()
     )
 
     return (
@@ -1601,9 +1624,14 @@ def build_monthly_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_weekday_hour_matrix(hourly: pd.DataFrame) -> pd.DataFrame:
     data = hourly.copy()
-    data["Jour_num"] = data["Horodate"].dt.weekday
+    reference = (
+        data["Horodate_debut"]
+        if "Horodate_debut" in data.columns
+        else data["Horodate"] - pd.Timedelta(hours=1)
+    )
+    data["Jour_num"] = reference.dt.weekday
     data["Jour"] = data["Jour_num"].map(WEEKDAYS)
-    data["Heure"] = data["Horodate"].dt.hour
+    data["Heure"] = reference.dt.hour
 
     matrix = data.pivot_table(
         index="Heure",
@@ -1611,12 +1639,119 @@ def build_weekday_hour_matrix(hourly: pd.DataFrame) -> pd.DataFrame:
         values="Puissance_kW",
         aggfunc="mean",
     )
+    matrix.index.name = "Heure"
+    return matrix.reindex(index=range(24), columns=WEEKDAY_ORDER)
 
-    return matrix.reindex(
-        index=range(24),
-        columns=WEEKDAY_ORDER,
+
+def build_date_hour_matrix(hourly: pd.DataFrame) -> pd.DataFrame:
+    """Matrice chronologique complète : une ligne par date, une colonne par heure."""
+    data = hourly.copy()
+    reference = (
+        data["Horodate_debut"]
+        if "Horodate_debut" in data.columns
+        else data["Horodate"] - pd.Timedelta(hours=1)
     )
+    data["Date"] = reference.dt.normalize()
+    data["Heure"] = reference.dt.hour
 
+    matrix = data.pivot_table(
+        index="Date",
+        columns="Heure",
+        values="Puissance_kW",
+        aggfunc="mean",
+    ).reindex(columns=range(24))
+    matrix.columns = [f"{h:02d}h-{(h + 1) % 24:02d}h" for h in range(24)]
+    return matrix.sort_index()
+
+
+def _last_sunday(year: int, month: int) -> pd.Timestamp:
+    days = pd.date_range(
+        pd.Timestamp(year=year, month=month, day=1),
+        pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthEnd(0),
+        freq="D",
+    )
+    return days[days.weekday == 6][-1].normalize()
+
+
+def build_quality_report(df: pd.DataFrame, time_step: pd.Timedelta):
+    """Contrôle la complétude en tenant compte des changements d'heure France."""
+    data = add_consumption_period_columns(df)
+    normal = int(round(pd.Timedelta(days=1) / time_step))
+    one_hour = int(round(pd.Timedelta(hours=1) / time_step))
+
+    data["Date_conso"] = data["Horodate_debut"].dt.normalize()
+    actual = data.groupby("Date_conso").size()
+
+    if actual.empty:
+        empty = pd.DataFrame(columns=[
+            "Date", "Nombre_points", "Points_attendus", "Relevés_manquants",
+            "Relevés_en_excès", "Statut"
+        ])
+        return empty, {
+            "expected_points_per_day": normal,
+            "coverage_percent": 0.0,
+            "missing_points": 0,
+            "duplicate_count_non_dst": 0,
+            "dst_days": 0,
+        }
+
+    dates = pd.date_range(actual.index.min(), actual.index.max(), freq="D")
+    report = pd.DataFrame({"Date": dates})
+    report["Nombre_points"] = report["Date"].map(actual).fillna(0).astype(int)
+    report["Points_attendus"] = normal
+    report["Type_journée"] = "Journée normale"
+
+    years = sorted(set(report["Date"].dt.year.tolist()))
+    spring_dates = {_last_sunday(y, 3) for y in years}
+    autumn_dates = {_last_sunday(y, 10) for y in years}
+
+    spring_mask = report["Date"].isin(spring_dates)
+    autumn_mask = report["Date"].isin(autumn_dates)
+    report.loc[spring_mask, "Points_attendus"] = normal - one_hour
+    report.loc[spring_mask, "Type_journée"] = "Passage à l'heure d'été (23 h)"
+    report.loc[autumn_mask, "Points_attendus"] = normal + one_hour
+    report.loc[autumn_mask, "Type_journée"] = "Passage à l'heure d'hiver (25 h)"
+
+    report["Relevés_manquants"] = (
+        report["Points_attendus"] - report["Nombre_points"]
+    ).clip(lower=0)
+    report["Relevés_en_excès"] = (
+        report["Nombre_points"] - report["Points_attendus"]
+    ).clip(lower=0)
+
+    report["Statut"] = "Cohérent"
+    report.loc[spring_mask & (report["Relevés_manquants"] == 0) & (report["Relevés_en_excès"] == 0), "Statut"] = "Cohérent – changement d'heure"
+    report.loc[autumn_mask & (report["Relevés_manquants"] == 0) & (report["Relevés_en_excès"] == 0), "Statut"] = "Cohérent – changement d'heure"
+    report.loc[report["Relevés_manquants"] > 0, "Statut"] = "À contrôler – relevés manquants"
+    report.loc[report["Relevés_en_excès"] > 0, "Statut"] = "À contrôler – relevés en excès"
+
+    expected_total = int(report["Points_attendus"].sum())
+    usable_total = int(np.minimum(report["Nombre_points"], report["Points_attendus"]).sum())
+    coverage = 100.0 * usable_total / expected_total if expected_total else 0.0
+
+    # Lors du retour à l'heure d'hiver, les timestamps naïfs de 02:xx peuvent
+    # apparaître deux fois : ces doublons sont attendus et ne sont pas signalés.
+    duplicate_rows = data.loc[data["Horodate"].duplicated(keep="first")].copy()
+    if duplicate_rows.empty:
+        non_dst_duplicates = 0
+    else:
+        duplicate_dates = duplicate_rows["Horodate"].dt.normalize()
+        expected_dst_dup = pd.Series(False, index=duplicate_rows.index)
+        for d in autumn_dates:
+            expected_dst_dup |= (
+                (duplicate_dates == d)
+                & (duplicate_rows["Horodate"].dt.hour == 2)
+            )
+        non_dst_duplicates = int((~expected_dst_dup).sum())
+
+    metrics = {
+        "expected_points_per_day": normal,
+        "coverage_percent": coverage,
+        "missing_points": int(report["Relevés_manquants"].sum()),
+        "duplicate_count_non_dst": non_dst_duplicates,
+        "dst_days": int((spring_mask | autumn_mask).sum()),
+    }
+    return report, metrics
 
 def make_colored_style(matrix: pd.DataFrame):
     return (
@@ -4380,6 +4515,7 @@ def make_excel_export(
     daily_data: pd.DataFrame,
     monthly_data: pd.DataFrame,
     weekday_hour_matrix: pd.DataFrame,
+    date_hour_matrix: pd.DataFrame,
     tariff_summary: pd.DataFrame,
     tariff_detail: pd.DataFrame,
     financial_summary: pd.DataFrame,
@@ -4409,6 +4545,10 @@ def make_excel_export(
         weekday_hour_matrix.to_excel(
             writer,
             sheet_name="Moyenne heure-jour",
+        )
+        date_hour_matrix.to_excel(
+            writer,
+            sheet_name="Heures toutes dates",
         )
         tariff_summary.to_excel(
             writer,
@@ -5167,6 +5307,7 @@ hourly_df = build_hourly_data(filtered_df)
 daily_df = build_daily_data(filtered_df)
 monthly_df = build_monthly_data(filtered_df)
 weekday_hour_matrix = build_weekday_hour_matrix(hourly_df)
+date_hour_matrix = build_date_hour_matrix(hourly_df)
 
 filtered_df = add_tariff_categories(
     filtered_df,
@@ -5465,35 +5606,21 @@ load_factor = (
     else 0
 )
 
-duplicate_count = int(
-    filtered_df["Horodate"].duplicated().sum()
+quality_report_df, quality_metrics = build_quality_report(
+    filtered_df,
+    time_step,
 )
 
-expected_points_per_day = round(
-    pd.Timedelta(days=1) / time_step
-)
+duplicate_count = quality_metrics["duplicate_count_non_dst"]
+expected_points_per_day = quality_metrics["expected_points_per_day"]
+coverage_percent = quality_metrics["coverage_percent"]
+missing_points_count = quality_metrics["missing_points"]
 
-one_hour_points = round(
-    pd.Timedelta(hours=1) / time_step
-)
-
-points_per_day = (
-    filtered_df.assign(
-        Date=filtered_df["Horodate"].dt.date
-    )
-    .groupby("Date")
-    .size()
-)
-
-valid_daily_counts = {
-    expected_points_per_day,
-    expected_points_per_day - one_hour_points,
-    expected_points_per_day + one_hour_points,
-}
-
-atypical_days = points_per_day[
-    ~points_per_day.isin(valid_daily_counts)
-]
+points_per_day = quality_report_df.set_index("Date")["Nombre_points"]
+atypical_quality_df = quality_report_df[
+    quality_report_df["Statut"].str.startswith("À contrôler", na=False)
+].copy()
+atypical_days = atypical_quality_df.set_index("Date")["Nombre_points"]
 
 
 # ============================================================
@@ -5547,7 +5674,7 @@ info1, info2, info3 = st.columns([2, 1, 1])
 with info1:
     st.info(
         f"📅 Données analysées du "
-        f"**{filtered_df['Horodate'].min():%d/%m/%Y %H:%M}** "
+        f"**{filtered_df['Horodate_debut'].min():%d/%m/%Y %H:%M}** "
         f"au **{filtered_df['Horodate'].max():%d/%m/%Y %H:%M}**"
     )
 
@@ -7108,6 +7235,53 @@ with tab_profiles:
         use_container_width=True,
     )
 
+    st.subheader("Consommation horaire sur l’ensemble de la période")
+    st.caption(
+        "Chaque ligne correspond à une date réelle du fichier source et chaque "
+        "colonne à une heure de consommation. Les cases vides correspondent à "
+        "des données absentes ; aucune consommation n’est interpolée."
+    )
+
+    full_display_matrix = date_hour_matrix.copy()
+    full_display_matrix.index = full_display_matrix.index.strftime("%d/%m/%Y")
+    full_display_matrix.index.name = "Date"
+    st.dataframe(
+        make_colored_style(full_display_matrix),
+        use_container_width=True,
+        height=720,
+    )
+
+    full_heatmap = go.Figure(
+        data=go.Heatmap(
+            z=date_hour_matrix.values,
+            x=date_hour_matrix.columns,
+            y=[d.strftime("%d/%m/%Y") for d in date_hour_matrix.index],
+            colorscale=[
+                [0.00, "#63BE7B"],
+                [0.30, "#A9D26D"],
+                [0.50, "#FFEB84"],
+                [0.72, "#F6B26B"],
+                [1.00, "#F8696B"],
+            ],
+            colorbar=dict(title="kW"),
+            hovertemplate=(
+                "Date : %{y}<br>"
+                "Plage : %{x}<br>"
+                "Puissance moyenne : %{z:.2f} kW"
+                "<extra></extra>"
+            ),
+        )
+    )
+    full_heatmap.update_layout(
+        title="Carte thermique de l’ensemble des relevés",
+        template="plotly_white",
+        xaxis_title="Plage horaire",
+        yaxis_title="Date",
+        height=max(720, min(1800, 260 + 2.8 * len(date_hour_matrix))),
+    )
+    full_heatmap.update_yaxes(autorange="reversed")
+    st.plotly_chart(full_heatmap, use_container_width=True)
+
 
 # ============================================================
 # CONSOMMATIONS JOURNALIÈRES
@@ -7265,67 +7439,59 @@ with tab_quality:
     quality1, quality2, quality3, quality4 = st.columns(4)
 
     quality1.metric(
-        "Lignes exploitables",
-        f"{len(filtered_df):,}".replace(",", " "),
+        "Couverture des relevés",
+        f"{coverage_percent:.2f} %".replace(".", ","),
     )
-
     quality2.metric(
-        "Horodatages en doublon",
+        "Relevés manquants",
+        f"{missing_points_count:,}".replace(",", " "),
+    )
+    quality3.metric(
+        "Jours à contrôler",
+        len(atypical_quality_df),
+    )
+    quality4.metric(
+        "Doublons hors heure d'hiver",
         duplicate_count,
     )
 
-    quality3.metric(
-        "Jours atypiques",
-        len(atypical_days),
+    st.caption(
+        f"Référence : {expected_points_per_day} points pour une journée normale "
+        f"avec un pas de {int(time_step.total_seconds() / 60)} minutes. "
+        "Les journées de changement d'heure sont contrôlées spécifiquement "
+        "sur 23 h ou 25 h. Les valeurs absentes ne sont pas interpolées."
     )
 
-    quality4.metric(
-        "Points théoriques/jour",
-        expected_points_per_day,
-    )
-
-    quality_df = (
-        points_per_day
-        .rename("Nombre_points")
-        .reset_index()
-    )
-
-    quality_df.columns = [
-        "Date",
-        "Nombre_points",
-    ]
-
-    quality_df["Statut"] = np.where(
-        quality_df["Nombre_points"].isin(
-            valid_daily_counts
-        ),
-        "Cohérent",
-        "À contrôler",
-    )
-
+    quality_display = quality_report_df.copy()
+    quality_display["Date"] = quality_display["Date"].dt.strftime("%d/%m/%Y")
     st.dataframe(
-        quality_df,
+        quality_display,
         use_container_width=True,
-        height=480,
+        height=520,
+        hide_index=True,
     )
 
-    if atypical_days.empty:
+    if atypical_quality_df.empty and duplicate_count == 0:
         st.success(
-            "Aucune journée anormale détectée, "
-            "hors changements d'heure possibles."
+            "Aucune anomalie de complétude détectée. Les journées de passage "
+            "à l'heure d'été et à l'heure d'hiver sont traitées selon leur "
+            "durée réelle."
         )
     else:
         st.warning(
-            "Certaines journées comportent un nombre "
-            "inhabituel de relevés."
+            "Des données sont à contrôler. Les totaux sont calculés uniquement "
+            "à partir des relevés présents : aucune consommation manquante "
+            "n'est reconstituée automatiquement."
         )
 
-        st.dataframe(
-            atypical_days
-            .rename("Nombre de relevés")
-            .to_frame(),
-            use_container_width=True,
-        )
+        if not atypical_quality_df.empty:
+            atypical_display = atypical_quality_df.copy()
+            atypical_display["Date"] = atypical_display["Date"].dt.strftime("%d/%m/%Y")
+            st.dataframe(
+                atypical_display,
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ============================================================
@@ -7757,6 +7923,7 @@ with tab_export:
         daily_export,
         monthly_export,
         weekday_hour_matrix.round(3),
+        date_hour_matrix.round(3),
         tariff_summary_export,
         tariff_detail_export,
         financial_summary_export,
