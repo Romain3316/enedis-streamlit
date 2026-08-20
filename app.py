@@ -1540,6 +1540,65 @@ def filter_period(
     return result.copy()
 
 
+def build_autocalsol_export(
+    df: pd.DataFrame,
+    export_year: int,
+) -> tuple[pd.DataFrame, int]:
+    """Construit un fichier horaire complet conforme à l'import AutoCal-Sol.
+
+    La date est celle du début de la période de consommation et l'heure est
+    l'heure de fin de la mesure. Les heures totalement absentes sont complétées
+    à 0 W. Le calendrier reste volontairement naïf (24 h par jour), sans
+    traitement particulier des changements d'heure été/hiver.
+    """
+    hourly_all = build_hourly_data(df)
+    hourly_all = hourly_all.copy()
+    hourly_all["Debut_mesure"] = hourly_all["Horodate_debut"]
+
+    year_start = pd.Timestamp(year=export_year, month=1, day=1, hour=0)
+    next_year = pd.Timestamp(year=export_year + 1, month=1, day=1, hour=0)
+    full_hours = pd.date_range(
+        start=year_start,
+        end=next_year - pd.Timedelta(hours=1),
+        freq="h",
+    )
+
+    base = pd.DataFrame({"Debut_mesure": full_hours})
+    source = hourly_all[["Debut_mesure", "Puissance_kW"]].copy()
+    merged = base.merge(source, on="Debut_mesure", how="left")
+
+    missing_hours = int(merged["Puissance_kW"].isna().sum())
+    merged["Puissance_kW"] = merged["Puissance_kW"].fillna(0.0)
+    merged["Fin_mesure"] = merged["Debut_mesure"] + pd.Timedelta(hours=1)
+
+    result = pd.DataFrame(
+        {
+            "Date de la mesure": merged["Debut_mesure"].dt.date,
+            "Heure de fin de la mesure": merged["Fin_mesure"].dt.time,
+            "Puissance moyenne (W)": (
+                merged["Puissance_kW"] * 1000.0
+            ).round(3),
+        }
+    )
+    return result, missing_hours
+
+
+def make_autocalsol_excel(export_df: pd.DataFrame) -> bytes:
+    """Génère un XLSX à trois colonnes, sans feuille ni métadonnée supplémentaire."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="Courbe de charge", index=False)
+        ws = writer.book["Courbe de charge"]
+        ws.column_dimensions["A"].width = 20
+        ws.column_dimensions["B"].width = 25
+        ws.column_dimensions["C"].width = 24
+        for cell in ws["A"][1:]:
+            cell.number_format = "dd/mm/yyyy"
+        for cell in ws["B"][1:]:
+            cell.number_format = "hh:mm"
+    return output.getvalue()
+
+
 def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
     hourly = add_consumption_period_columns(df)
 
@@ -7786,6 +7845,57 @@ with tab_quality:
 
 with tab_export:
     st.subheader("Exporter l'analyse")
+
+    st.markdown("### Export dédié AutoCal-Sol")
+    st.caption(
+        "Fichier horaire complet avec uniquement les trois colonnes attendues "
+        "par AutoCal-Sol. Les heures absentes sont automatiquement renseignées à 0 W."
+    )
+
+    autocalsol_reference = add_consumption_period_columns(enriched_df)
+    autocalsol_years = sorted(
+        autocalsol_reference["Horodate_debut"].dropna().dt.year.unique().astype(int).tolist()
+    )
+    autocalsol_default_year = (
+        int(selected_year)
+        if selected_year is not None and int(selected_year) in autocalsol_years
+        else autocalsol_years[-1]
+    )
+    autocalsol_year = st.selectbox(
+        "Année à exporter vers AutoCal-Sol",
+        options=autocalsol_years,
+        index=autocalsol_years.index(autocalsol_default_year),
+        key="autocalsol_export_year",
+    )
+
+    autocalsol_df, autocalsol_missing_hours = build_autocalsol_export(
+        enriched_df,
+        int(autocalsol_year),
+    )
+    autocalsol_excel = make_autocalsol_excel(autocalsol_df)
+
+    auto_info1, auto_info2, auto_info3 = st.columns(3)
+    with auto_info1:
+        st.metric("Année", str(autocalsol_year))
+    with auto_info2:
+        st.metric("Lignes horaires", f"{len(autocalsol_df):,}".replace(",", " "))
+    with auto_info3:
+        st.metric("Heures complétées à 0", autocalsol_missing_hours)
+
+    st.download_button(
+        "⬇️ Exporter la courbe de charge pour AutoCal-Sol",
+        data=autocalsol_excel,
+        file_name=f"courbe_charge_autocalsol_{autocalsol_year}.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        use_container_width=True,
+        key="download_autocalsol_excel",
+    )
+
+    st.markdown("---")
+    st.markdown("### Exports complets CMA")
 
     summary_df = pd.DataFrame(
         {
