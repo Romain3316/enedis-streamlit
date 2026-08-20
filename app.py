@@ -1600,37 +1600,90 @@ def make_autocalsol_excel(export_df: pd.DataFrame) -> bytes:
 
 
 def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
-    hourly = add_consumption_period_columns(df)
+    """Agrège les pas Enedis en heures civiles, en respectant les DST.
 
-    # L'horodatage source marque la FIN du pas Enedis. On agrège donc vers
-    # l'heure de fin : 23:30 + 00:00 forment l'heure 23:00 -> 00:00.
-    hourly["Horodate_heure_fin"] = hourly["Horodate"].dt.ceil("h")
+    L'horodatage Enedis marque la FIN de l'intervalle. L'agrégation est faite
+    sur une chronologie réelle (UTC) puis reprojetée en heure locale
+    Europe/Paris. Cela évite de créer artificiellement le créneau 02h-03h
+    lors du passage à l'heure d'été. Au retour à l'heure d'hiver, les deux
+    occurrences réelles de l'heure répétée sont regroupées dans la même case
+    locale pour conserver une grille visuelle de 24 colonnes.
+    """
+    hourly = add_consumption_period_columns(df)
+    hourly = hourly.copy()
+
+    # Localiser les horodatages naïfs Enedis dans le fuseau français.
+    # ambiguous="infer" distingue les deux occurrences de 02:xx en octobre.
+    local_index = pd.DatetimeIndex(pd.to_datetime(hourly["Horodate"]))
+    try:
+        local_aware = local_index.tz_localize(
+            "Europe/Paris",
+            ambiguous="infer",
+            nonexistent="raise",
+        )
+    except Exception:
+        # Repli prudent pour les fichiers atypiques : le traitement normal
+        # reste inchangé hors heure ambiguë.
+        local_aware = local_index.tz_localize(
+            "Europe/Paris",
+            ambiguous=True,
+            nonexistent="shift_forward",
+        )
+
+    # Travailler en UTC garantit des heures de durée réelle égale à 60 min,
+    # y compris pendant les deux changements d'heure annuels.
+    hourly["_Heure_fin_utc"] = local_aware.tz_convert("UTC").ceil("h")
     hourly["Puissance_ponderee"] = (
         hourly["Puissance_kW"] * hourly["Duree_h"]
     )
 
-    hourly = (
-        hourly.groupby("Horodate_heure_fin", as_index=False)
+    grouped = (
+        hourly.groupby("_Heure_fin_utc", as_index=False)
         .agg(
             Energie_kWh=("Energie_kWh", "sum"),
             Puissance_ponderee=("Puissance_ponderee", "sum"),
             Duree_totale_h=("Duree_h", "sum"),
             Nombre_points=("Valeur", "size"),
         )
-        .rename(columns={"Horodate_heure_fin": "Horodate"})
-        .sort_values("Horodate")
+        .sort_values("_Heure_fin_utc")
         .reset_index(drop=True)
     )
 
-    hourly["Puissance_kW"] = np.where(
-        hourly["Duree_totale_h"] > 0,
-        hourly["Puissance_ponderee"] / hourly["Duree_totale_h"],
+    # Revenir en heure locale après l'agrégation réelle. Soustraire une heure
+    # sur un timestamp tz-aware respecte le saut 01:59 -> 03:00 au printemps.
+    end_local_aware = pd.DatetimeIndex(grouped["_Heure_fin_utc"]).tz_convert(
+        "Europe/Paris"
+    )
+    start_local_aware = end_local_aware - pd.Timedelta(hours=1)
+    grouped["_Debut_local"] = start_local_aware.tz_localize(None)
+
+    # En octobre, deux heures réelles peuvent partager le même libellé local
+    # de début (02h). On les regroupe pour la grille 24 h, en conservant toute
+    # l'énergie et une puissance moyenne pondérée par la durée réelle.
+    grouped = (
+        grouped.groupby("_Debut_local", as_index=False)
+        .agg(
+            Energie_kWh=("Energie_kWh", "sum"),
+            Puissance_ponderee=("Puissance_ponderee", "sum"),
+            Duree_totale_h=("Duree_totale_h", "sum"),
+            Nombre_points=("Nombre_points", "sum"),
+        )
+        .sort_values("_Debut_local")
+        .reset_index(drop=True)
+    )
+
+    grouped["Puissance_kW"] = np.where(
+        grouped["Duree_totale_h"] > 0,
+        grouped["Puissance_ponderee"] / grouped["Duree_totale_h"],
         np.nan,
     )
-    hourly["Horodate_debut"] = hourly["Horodate"] - pd.Timedelta(hours=1)
-    hourly["Horodate_milieu"] = hourly["Horodate"] - pd.Timedelta(minutes=30)
+    grouped["Horodate_debut"] = grouped["_Debut_local"]
+    grouped["Horodate"] = grouped["Horodate_debut"] + pd.Timedelta(hours=1)
+    grouped["Horodate_milieu"] = (
+        grouped["Horodate_debut"] + pd.Timedelta(minutes=30)
+    )
 
-    return hourly[
+    return grouped[
         [
             "Horodate",
             "Horodate_debut",
