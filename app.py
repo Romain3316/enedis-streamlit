@@ -5959,7 +5959,6 @@ with nav_report:
     st.caption(
         "Retrouver les exports de données et générer les livrables disponibles."
     )
-    tab_export = st.container()
 
 with nav_settings:
     st.markdown("## Paramètres")
@@ -7843,7 +7842,7 @@ with tab_quality:
 # EXPORT
 # ============================================================
 
-with tab_export:
+with nav_report:
     st.subheader("Exporter l'analyse")
 
     st.markdown("### Export dédié AutoCal-Sol")
