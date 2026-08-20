@@ -1546,8 +1546,8 @@ def build_autocalsol_export(
 ) -> tuple[pd.DataFrame, int]:
     """Construit un fichier horaire complet conforme à l'import AutoCal-Sol.
 
-    La date est celle du début de la période de consommation et l'heure est
-    l'heure de fin de la mesure. Les heures totalement absentes sont complétées
+    La date et l'heure sont celles de la fin de la mesure, conformément à la
+    convention attendue pour l'import AutoCal-Sol. Les heures totalement absentes sont complétées
     à 0 W. Le calendrier reste volontairement naïf (24 h par jour), sans
     traitement particulier des changements d'heure été/hiver.
     """
@@ -1573,7 +1573,7 @@ def build_autocalsol_export(
 
     result = pd.DataFrame(
         {
-            "Date de la mesure": merged["Debut_mesure"].dt.date,
+            "Date de la mesure": merged["Fin_mesure"].dt.date,
             "Heure de fin de la mesure": merged["Fin_mesure"].dt.time,
             "Puissance moyenne (W)": (
                 merged["Puissance_kW"] * 1000.0
@@ -8484,3 +8484,4 @@ with tab_quality:
 # ============================================================
 # EXPORT
 # ============================================================
+
