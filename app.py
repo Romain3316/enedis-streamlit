@@ -3,6 +3,9 @@ from io import BytesIO
 from pathlib import Path
 
 import requests
+from PIL import Image as PILImage, ImageDraw, ImageFont
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -1754,13 +1757,9 @@ def build_quality_report(df: pd.DataFrame, time_step: pd.Timedelta):
     return report, metrics
 
 def make_colored_style(matrix: pd.DataFrame):
-    return (
+    numeric_columns = list(matrix.select_dtypes(include=[np.number]).columns)
+    styler = (
         matrix.style
-        .format("{:.1f}")
-        .background_gradient(
-            cmap="RdYlGn_r",
-            axis=None,
-        )
         .set_properties(
             **{
                 "text-align": "center",
@@ -1782,6 +1781,149 @@ def make_colored_style(matrix: pd.DataFrame):
             ]
         )
     )
+    if numeric_columns:
+        styler = styler.format({col: "{:.1f}" for col in numeric_columns})
+        styler = styler.background_gradient(
+            cmap="RdYlGn_r",
+            axis=None,
+            subset=numeric_columns,
+        )
+    return styler
+
+
+def make_colored_excel_bytes(
+    table: pd.DataFrame,
+    sheet_name: str,
+    index_label: str | None = None,
+) -> bytes:
+    """Exporte un tableau avec une échelle de couleur vert-jaune-rouge."""
+    output = BytesIO()
+    export_df = table.copy()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=True,
+            index_label=index_label,
+        )
+        ws = writer.book[sheet_name]
+        header_fill = PatternFill("solid", fgColor=CMA_BLUE.replace("#", ""))
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        numeric_cols = [
+            i + 2
+            for i, col in enumerate(export_df.columns)
+            if pd.api.types.is_numeric_dtype(export_df[col])
+        ]
+        if numeric_cols and len(export_df) > 0:
+            start_col = min(numeric_cols)
+            end_col = max(numeric_cols)
+            from openpyxl.utils import get_column_letter
+            rng = (
+                f"{get_column_letter(start_col)}2:"
+                f"{get_column_letter(end_col)}{len(export_df) + 1}"
+            )
+            ws.conditional_formatting.add(
+                rng,
+                ColorScaleRule(
+                    start_type="min", start_color="63BE7B",
+                    mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                    end_type="max", end_color="F8696B",
+                ),
+            )
+
+        ws.freeze_panes = "B2"
+        for column_cells in ws.columns:
+            max_len = max(
+                len(str(c.value)) if c.value is not None else 0
+                for c in column_cells
+            )
+            ws.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 11), 22)
+
+    return output.getvalue()
+
+
+def _heat_color(value: float, vmin: float, vmax: float) -> tuple[int, int, int]:
+    if pd.isna(value):
+        return (242, 245, 247)
+    if vmax <= vmin:
+        ratio = 0.5
+    else:
+        ratio = max(0.0, min(1.0, (float(value) - vmin) / (vmax - vmin)))
+    stops = [
+        (0.00, (99, 190, 123)),
+        (0.30, (169, 210, 109)),
+        (0.50, (255, 235, 132)),
+        (0.72, (246, 178, 107)),
+        (1.00, (248, 105, 107)),
+    ]
+    for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+        if ratio <= p1:
+            t = (ratio - p0) / (p1 - p0) if p1 > p0 else 0
+            return tuple(round(c0[i] + t * (c1[i] - c0[i])) for i in range(3))
+    return stops[-1][1]
+
+
+def make_colored_png_bytes(
+    table: pd.DataFrame,
+    title: str,
+    index_label: str,
+) -> bytes:
+    """Crée une image PNG du tableau coloré sans dépendance Kaleido."""
+    df = table.copy()
+    numeric_cols = list(df.select_dtypes(include=[np.number]).columns)
+    vals = df[numeric_cols].to_numpy(dtype=float) if numeric_cols else np.array([])
+    finite = vals[np.isfinite(vals)] if vals.size else np.array([])
+    vmin = float(finite.min()) if finite.size else 0.0
+    vmax = float(finite.max()) if finite.size else 1.0
+
+    font = ImageFont.load_default()
+    row_h = 28
+    title_h = 44
+    index_w = 105
+    text_col_w = 85
+    numeric_w = 62
+    widths = [index_w] + [numeric_w if c in numeric_cols else text_col_w for c in df.columns]
+    width = sum(widths)
+    height = title_h + row_h * (len(df) + 1)
+    image = PILImage.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([0, 0, width, title_h], fill=CMA_BLUE)
+    draw.text((10, 14), title, fill="white", font=font)
+
+    headers = [index_label] + [str(c) for c in df.columns]
+    x = 0
+    for w, header in zip(widths, headers):
+        draw.rectangle([x, title_h, x + w, title_h + row_h], fill=CMA_BLUE, outline="white")
+        draw.text((x + 4, title_h + 9), header, fill="white", font=font)
+        x += w
+
+    for r, (idx, row) in enumerate(df.iterrows(), start=1):
+        y = title_h + row_h * r
+        x = 0
+        draw.rectangle([x, y, x + widths[0], y + row_h], fill=(232, 237, 243), outline="white")
+        draw.text((x + 4, y + 9), str(idx), fill=CMA_TEXT, font=font)
+        x += widths[0]
+        for c_idx, col in enumerate(df.columns):
+            value = row[col]
+            w = widths[c_idx + 1]
+            if col in numeric_cols:
+                fill = _heat_color(value, vmin, vmax)
+                text = "" if pd.isna(value) else f"{float(value):.1f}"
+            else:
+                fill = (247, 249, 251)
+                text = "" if pd.isna(value) else str(value)
+            draw.rectangle([x, y, x + w, y + row_h], fill=fill, outline="white")
+            draw.text((x + 4, y + 9), text, fill=CMA_TEXT, font=font)
+            x += w
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 def build_daily_calendar(
@@ -4546,7 +4688,13 @@ def make_excel_export(
             writer,
             sheet_name="Moyenne heure-jour",
         )
-        date_hour_matrix.to_excel(
+        date_hour_export = date_hour_matrix.copy()
+        date_hour_export.insert(
+            0,
+            "Jour",
+            [WEEKDAYS[d.weekday()] for d in date_hour_export.index],
+        )
+        date_hour_export.to_excel(
             writer,
             sheet_name="Heures toutes dates",
         )
@@ -7146,6 +7294,36 @@ with tab_profiles:
             height=810,
         )
 
+        weekly_excel = make_colored_excel_bytes(
+            display_matrix,
+            sheet_name="Profil hebdomadaire",
+            index_label="Plage horaire",
+        )
+        weekly_png = make_colored_png_bytes(
+            display_matrix,
+            title="Consommation horaire moyenne selon le jour de la semaine",
+            index_label="Plage horaire",
+        )
+        dl_weekly_xlsx, dl_weekly_png = st.columns(2)
+        with dl_weekly_xlsx:
+            st.download_button(
+                "Télécharger Excel",
+                data=weekly_excel,
+                file_name="consommation_horaire_moyenne_hebdomadaire.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_weekly_heatmap_xlsx",
+            )
+        with dl_weekly_png:
+            st.download_button(
+                "Télécharger PNG",
+                data=weekly_png,
+                file_name="consommation_horaire_moyenne_hebdomadaire.png",
+                mime="image/png",
+                use_container_width=True,
+                key="download_weekly_heatmap_png",
+            )
+
     with col_chart:
         profile_long = (
             weekday_hour_matrix
@@ -7243,6 +7421,11 @@ with tab_profiles:
     )
 
     full_display_matrix = date_hour_matrix.copy()
+    full_display_matrix.insert(
+        0,
+        "Jour",
+        [WEEKDAYS[d.weekday()] for d in full_display_matrix.index],
+    )
     full_display_matrix.index = full_display_matrix.index.strftime("%d/%m/%Y")
     full_display_matrix.index.name = "Date"
     st.dataframe(
@@ -7250,6 +7433,36 @@ with tab_profiles:
         use_container_width=True,
         height=720,
     )
+
+    full_excel = make_colored_excel_bytes(
+        full_display_matrix,
+        sheet_name="Toutes dates",
+        index_label="Date",
+    )
+    full_png = make_colored_png_bytes(
+        full_display_matrix,
+        title="Consommation horaire sur l’ensemble de la période",
+        index_label="Date",
+    )
+    dl_full_xlsx, dl_full_png = st.columns(2)
+    with dl_full_xlsx:
+        st.download_button(
+            "Télécharger Excel",
+            data=full_excel,
+            file_name="consommation_horaire_toutes_dates.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="download_full_heatmap_xlsx",
+        )
+    with dl_full_png:
+        st.download_button(
+            "Télécharger PNG",
+            data=full_png,
+            file_name="consommation_horaire_toutes_dates.png",
+            mime="image/png",
+            use_container_width=True,
+            key="download_full_heatmap_png",
+        )
 
     full_heatmap = go.Figure(
         data=go.Heatmap(
