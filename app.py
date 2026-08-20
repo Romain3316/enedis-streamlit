@@ -5841,27 +5841,100 @@ st.caption(interpretation)
 # ONGLETS
 # ============================================================
 
+# V18 — refonte ergonomique uniquement.
+# Les blocs de calcul et leurs fonctions restent inchangés : seule leur
+# organisation visuelle est regroupée par parcours métier.
 (
-    tab_dashboard,
-    tab_solar,
-    tab_tariff,
-    tab_financial,
-    tab_profiles,
-    tab_daily,
-    tab_quality,
-    tab_export,
+    nav_consumption,
+    nav_pv,
+    nav_report,
+    nav_settings,
+    nav_benchmark,
 ) = st.tabs(
     [
-        "📊 Tableau de bord",
-        "☀️ Analyse solaire",
-        "⚡ Analyse tarifaire",
-        "💶 Étude financière",
-        "🕒 Profils horaires",
-        "📅 Consommations journalières",
-        "✅ Qualité des données",
-        "📥 Export",
+        "⚡ Consommations",
+        "☀️ Opportunité photovoltaïque",
+        "📄 Rapport & exports",
+        "⚙️ Paramètres",
+        "📊 Comparaison sectorielle",
     ]
 )
+
+with nav_consumption:
+    st.markdown("## Analyse des consommations")
+    st.caption(
+        "Comprendre quand et comment l’entreprise consomme, contrôler la qualité "
+        "des données et analyser les périodes tarifaires."
+    )
+    (
+        tab_dashboard,
+        tab_profiles,
+        tab_daily,
+        tab_tariff,
+        tab_quality,
+    ) = st.tabs(
+        [
+            "📊 Synthèse",
+            "🕒 Profils de consommation",
+            "📅 Analyse détaillée",
+            "⚡ Tarification & périodes",
+            "✅ Qualité des données",
+        ]
+    )
+
+with nav_pv:
+    st.markdown("## Opportunité photovoltaïque")
+    st.caption(
+        "Croiser la courbe de charge avec la production solaire et obtenir une "
+        "première simulation économique."
+    )
+    tab_solar, tab_financial = st.tabs(
+        [
+            "☀️ Production & autoconsommation",
+            "💶 Simulation économique indicative",
+        ]
+    )
+
+with nav_report:
+    st.markdown("## Rapport & exports")
+    st.caption(
+        "Retrouver les exports de données et générer les livrables disponibles."
+    )
+    tab_export = st.container()
+
+with nav_settings:
+    st.markdown("## Paramètres")
+    st.info(
+        "Les paramètres techniques de l’étude restent accessibles dans la barre "
+        "latérale afin de pouvoir les ajuster à tout moment sans quitter l’analyse."
+    )
+    st.markdown(
+        """
+        **Paramètres actuellement conservés dans la barre latérale :**
+        - période et année analysées ;
+        - hypothèses photovoltaïques et localisation ;
+        - plages et paramètres tarifaires ;
+        - hypothèses économiques disponibles dans l’outil.
+
+        Cette V18 réorganise uniquement l’interface : **aucune formule de calcul
+        n’est modifiée**.
+        """
+    )
+
+with nav_benchmark:
+    st.markdown("## Comparaison sectorielle")
+    st.info(
+        "Fonctionnalité préparée pour une future base collaborative sécurisée CMA. "
+        "Aucune donnée d’entreprise n’est enregistrée par l’application actuelle."
+    )
+    st.markdown(
+        """
+        À terme, ce module pourra comparer de façon anonymisée l’entreprise étudiée
+        à des profils du même secteur : courbe horaire, talon de consommation,
+        saisonnalité, puissance maximale, répartition tarifaire et potentiel
+        d’autoconsommation.
+        """
+    )
 
 
 # ============================================================
@@ -6846,7 +6919,7 @@ with tab_tariff:
 
 
 # ============================================================
-# ÉTUDE FINANCIÈRE
+# SIMULATION ÉCONOMIQUE INDICATIVE
 # ============================================================
 
 with tab_financial:
