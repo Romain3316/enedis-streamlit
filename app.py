@@ -1599,6 +1599,23 @@ def make_autocalsol_excel(export_df: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
+def make_autocalsol_csv(export_df: pd.DataFrame) -> bytes:
+    """Génère un CSV AutoCal-Sol à trois colonnes, séparateur point-virgule."""
+    csv_df = export_df.copy()
+    csv_df["Date de la mesure"] = pd.to_datetime(
+        csv_df["Date de la mesure"]
+    ).dt.strftime("%d/%m/%Y")
+    csv_df["Heure de fin de la mesure"] = csv_df["Heure de fin de la mesure"].apply(
+        lambda value: value.strftime("%H:%M") if pd.notna(value) else ""
+    )
+    return csv_df.to_csv(
+        index=False,
+        sep=";",
+        decimal=",",
+        lineterminator="\n",
+    ).encode("utf-8-sig")
+
+
 def build_hourly_data(df: pd.DataFrame) -> pd.DataFrame:
     """Agrège les pas Enedis en heures civiles, en respectant les DST.
 
@@ -6041,6 +6058,7 @@ with nav_report:
         int(autocalsol_year),
     )
     autocalsol_excel = make_autocalsol_excel(autocalsol_df)
+    autocalsol_csv = make_autocalsol_csv(autocalsol_df)
 
     auto_info1, auto_info2, auto_info3 = st.columns(3)
     with auto_info1:
@@ -6050,17 +6068,28 @@ with nav_report:
     with auto_info3:
         st.metric("Heures complétées à 0", autocalsol_missing_hours)
 
-    st.download_button(
-        "⬇️ Exporter la courbe de charge pour AutoCal-Sol",
-        data=autocalsol_excel,
-        file_name=f"courbe_charge_autocalsol_{autocalsol_year}.xlsx",
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        ),
-        use_container_width=True,
-        key="download_autocalsol_excel",
-    )
+    auto_download_csv, auto_download_excel = st.columns(2)
+    with auto_download_csv:
+        st.download_button(
+            "⬇️ Export AutoCal-Sol (.csv)",
+            data=autocalsol_csv,
+            file_name=f"courbe_charge_autocalsol_{autocalsol_year}.csv",
+            mime="text/csv; charset=utf-8",
+            use_container_width=True,
+            key="download_autocalsol_csv",
+        )
+    with auto_download_excel:
+        st.download_button(
+            "⬇️ Export AutoCal-Sol (.xlsx)",
+            data=autocalsol_excel,
+            file_name=f"courbe_charge_autocalsol_{autocalsol_year}.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            use_container_width=True,
+            key="download_autocalsol_excel",
+        )
 
     st.markdown("---")
     st.markdown("### Exports complets CMA")
@@ -8537,4 +8566,3 @@ with tab_quality:
 # ============================================================
 # EXPORT
 # ============================================================
-
