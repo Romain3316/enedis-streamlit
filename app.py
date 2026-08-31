@@ -1325,6 +1325,143 @@ def render_header() -> None:
 
 
 @st.cache_data(show_spinner=False)
+def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    """Lit un export Enedis de puissance maximale journalière (PMA/PMA1/PMA2/PMA3)."""
+    buffer = BytesIO(file_bytes)
+
+    if filename.lower().endswith(".csv"):
+        attempts = [
+            {"sep": ";", "encoding": "utf-8-sig"},
+            {"sep": ";", "encoding": "latin-1"},
+            {"sep": ",", "encoding": "utf-8-sig"},
+            {"sep": ",", "encoding": "latin-1"},
+        ]
+        df = None
+        last_error = None
+        for params in attempts:
+            try:
+                buffer.seek(0)
+                candidate = pd.read_csv(buffer, **params)
+                required = {"Horodate", "Valeur", "Grandeur physique"}
+                if required.issubset(candidate.columns):
+                    df = candidate
+                    break
+            except Exception as exc:
+                last_error = exc
+        if df is None:
+            raise ValueError(
+                "Le fichier PMA n'est pas reconnu. Les colonnes Horodate, Valeur "
+                "et Grandeur physique sont attendues."
+            ) from last_error
+    else:
+        df = pd.read_excel(buffer)
+
+    required = {"Horodate", "Valeur", "Grandeur physique"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            "Colonne(s) manquante(s) dans le fichier PMA : "
+            + ", ".join(sorted(missing))
+        )
+
+    keep = [
+        c for c in [
+            "Identifiant PRM", "Date de début", "Date de fin",
+            "Grandeur physique", "Grandeur métier", "Etape métier",
+            "Unité", "Pas", "Horodate", "Valeur"
+        ] if c in df.columns
+    ]
+    df = df[keep].copy()
+    df["Grandeur physique"] = (
+        df["Grandeur physique"].astype(str).str.strip().str.upper()
+    )
+    df = df[df["Grandeur physique"].isin(["PMA", "PMA1", "PMA2", "PMA3"])].copy()
+
+    df["Horodate"] = pd.to_datetime(
+        df["Horodate"],
+        errors="coerce",
+        dayfirst=True,
+    )
+    df["Valeur"] = pd.to_numeric(
+        df["Valeur"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce",
+    )
+    df = df.dropna(subset=["Horodate", "Valeur"])
+
+    if df.empty:
+        raise ValueError(
+            "Aucune donnée PMA/PMA1/PMA2/PMA3 exploitable n'a été trouvée."
+        )
+
+    # Les fichiers Enedis fournis sont en VA. Si une autre unité apparaît,
+    # on la conserve dans la lecture mais on bloque l'analyse pour éviter
+    # une conversion implicite erronée.
+    if "Unité" in df.columns:
+        units = set(df["Unité"].dropna().astype(str).str.strip().str.upper())
+        unsupported = units - {"VA", "KVA"}
+        if unsupported:
+            raise ValueError(
+                "Unité PMA non prise en charge : "
+                + ", ".join(sorted(unsupported))
+                + ". L'outil attend VA ou kVA."
+            )
+        unit_factor = df["Unité"].astype(str).str.strip().str.upper().map(
+            {"VA": 1 / 1000.0, "KVA": 1.0}
+        ).fillna(1 / 1000.0)
+    else:
+        unit_factor = pd.Series(1 / 1000.0, index=df.index)
+
+    df["Puissance_kVA"] = df["Valeur"] * unit_factor
+    df["Date"] = df["Horodate"].dt.normalize()
+    df["Jour_num"] = df["Date"].dt.dayofweek
+
+    weekday_fr = {
+        0: "lundi",
+        1: "mardi",
+        2: "mercredi",
+        3: "jeudi",
+        4: "vendredi",
+        5: "samedi",
+        6: "dimanche",
+    }
+    df["Jour"] = df["Jour_num"].map(weekday_fr)
+    return df.sort_values(["Date", "Grandeur physique"]).reset_index(drop=True)
+
+
+def build_pma_daily_wide(pma_df: pd.DataFrame) -> pd.DataFrame:
+    """Une ligne par date et une colonne par grandeur PMA disponible."""
+    daily = (
+        pma_df.pivot_table(
+            index="Date",
+            columns="Grandeur physique",
+            values="Puissance_kVA",
+            aggfunc="max",
+        )
+        .sort_index()
+        .reset_index()
+    )
+    daily.columns.name = None
+    daily["Jour_num"] = daily["Date"].dt.dayofweek
+    weekday_fr = {
+        0: "lundi", 1: "mardi", 2: "mercredi", 3: "jeudi",
+        4: "vendredi", 5: "samedi", 6: "dimanche",
+    }
+    daily["Jour"] = daily["Jour_num"].map(weekday_fr)
+    return daily
+
+
+def build_pma_weekday_means(pma_daily: pd.DataFrame) -> pd.DataFrame:
+    """Moyennes des puissances maximales quotidiennes par jour de semaine."""
+    value_cols = [c for c in ["PMA", "PMA1", "PMA2", "PMA3"] if c in pma_daily.columns]
+    result = (
+        pma_daily.groupby(["Jour_num", "Jour"], as_index=False)[value_cols]
+        .mean(numeric_only=True)
+        .sort_values("Jour_num")
+    )
+    return result
+
+
+@st.cache_data(show_spinner=False)
 def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     buffer = BytesIO(file_bytes)
 
@@ -5999,6 +6136,7 @@ with nav_consumption:
         tab_dashboard,
         tab_profiles,
         tab_daily,
+        tab_pma,
         tab_tariff,
         tab_quality,
     ) = st.tabs(
@@ -6006,6 +6144,7 @@ with nav_consumption:
             "📊 Synthèse",
             "🕒 Profils de consommation",
             "📅 Analyse détaillée",
+            "⚡ Puissance maximale",
             "⚡ Tarification & périodes",
             "✅ Qualité des données",
         ]
@@ -7462,6 +7601,222 @@ with tab_solar:
 # ANALYSE TARIFAIRE
 # ============================================================
 
+
+with tab_pma:
+    st.subheader("Puissance instantanée maximale quotidienne")
+    st.caption(
+        "Analyse complémentaire de la courbe de charge : ce fichier Enedis décrit "
+        "les pointes instantanées maximales quotidiennes en puissance apparente (kVA), "
+        "et non une puissance moyenne sur un pas de temps."
+    )
+
+    pma_uploaded_file = st.file_uploader(
+        "Importer le fichier Enedis des puissances maximales quotidiennes",
+        type=["csv", "xlsx", "xls"],
+        key="pma_uploaded_file",
+        help=(
+            "Fichier Enedis contenant les grandeurs PMA et, en triphasé, "
+            "PMA1, PMA2 et PMA3."
+        ),
+    )
+
+    if pma_uploaded_file is None:
+        st.info(
+            "Importez le fichier PMA Enedis pour afficher les pointes quotidiennes "
+            "et leur moyenne par jour de la semaine."
+        )
+    else:
+        try:
+            pma_df = read_enedis_pma_file(
+                pma_uploaded_file.getvalue(),
+                pma_uploaded_file.name,
+            )
+            pma_daily = build_pma_daily_wide(pma_df)
+            pma_weekday = build_pma_weekday_means(pma_daily)
+
+            available_pma = [
+                c for c in ["PMA", "PMA1", "PMA2", "PMA3"]
+                if c in pma_daily.columns
+            ]
+            is_three_phase = all(
+                phase in available_pma for phase in ["PMA1", "PMA2", "PMA3"]
+            )
+
+            pma_period_min = pma_daily["Date"].min()
+            pma_period_max = pma_daily["Date"].max()
+
+            st.success(
+                f"Fichier PMA chargé : {len(pma_daily):,} journées du "
+                f"{pma_period_min:%d/%m/%Y} au {pma_period_max:%d/%m/%Y} · "
+                f"{'Triphasé détecté' if is_three_phase else 'PMA détectée'}."
+                .replace(",", " ")
+            )
+
+            subscribed_kva = st.number_input(
+                "Puissance souscrite (kVA)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=36.0,
+                step=1.0,
+                key="pma_subscribed_kva",
+                help="Valeur contractuelle utilisée comme ligne de référence sur les graphiques.",
+            )
+
+            metric_cols = st.columns(4)
+            pma_max = (
+                float(pma_daily["PMA"].max())
+                if "PMA" in pma_daily.columns
+                else float("nan")
+            )
+            pma_mean = (
+                float(pma_daily["PMA"].mean())
+                if "PMA" in pma_daily.columns
+                else float("nan")
+            )
+            days_90 = (
+                int((pma_daily["PMA"] >= subscribed_kva * 0.90).sum())
+                if "PMA" in pma_daily.columns and subscribed_kva > 0
+                else 0
+            )
+            days_over = (
+                int((pma_daily["PMA"] > subscribed_kva).sum())
+                if "PMA" in pma_daily.columns and subscribed_kva > 0
+                else 0
+            )
+
+            with metric_cols[0]:
+                st.metric(
+                    "PMA maximale observée",
+                    f"{pma_max:.1f} kVA" if pd.notna(pma_max) else "—",
+                )
+            with metric_cols[1]:
+                st.metric(
+                    "PMA quotidienne moyenne",
+                    f"{pma_mean:.1f} kVA" if pd.notna(pma_mean) else "—",
+                )
+            with metric_cols[2]:
+                st.metric("Jours ≥ 90 % du souscrit", days_90)
+            with metric_cols[3]:
+                st.metric("Jours > puissance souscrite", days_over)
+
+            if (
+                is_three_phase
+                and set(["PMA1", "PMA2", "PMA3"]).issubset(pma_daily.columns)
+            ):
+                phase_means = pma_daily[["PMA1", "PMA2", "PMA3"]].mean()
+                phase_spread = float(phase_means.max() - phase_means.min())
+                st.caption(
+                    "Moyenne des maxima par phase : "
+                    + " · ".join(
+                        f"{phase} {phase_means[phase]:.1f} kVA"
+                        for phase in ["PMA1", "PMA2", "PMA3"]
+                    )
+                    + f" · Écart entre phases : {phase_spread:.1f} kVA"
+                )
+
+            st.markdown("### Évolution de la puissance maximale quotidienne")
+
+            fig_pma_daily = go.Figure()
+            pma_labels = {
+                "PMA": "PMA",
+                "PMA1": "PMA1",
+                "PMA2": "PMA2",
+                "PMA3": "PMA3",
+            }
+            for series in available_pma:
+                fig_pma_daily.add_trace(
+                    go.Scatter(
+                        x=pma_daily["Date"],
+                        y=pma_daily[series],
+                        mode="markers",
+                        name=pma_labels[series],
+                        hovertemplate=(
+                            "%{x|%d/%m/%Y}<br>"
+                            + series
+                            + " : %{y:.2f} kVA<extra></extra>"
+                        ),
+                    )
+                )
+
+            if subscribed_kva > 0:
+                fig_pma_daily.add_hline(
+                    y=subscribed_kva,
+                    line_dash="dash",
+                    annotation_text=f"P souscrite ({subscribed_kva:g} kVA)",
+                    annotation_position="top left",
+                )
+
+            fig_pma_daily.update_layout(
+                title="Puissance max quotidienne - kVA",
+                xaxis_title="Date",
+                yaxis_title="Puissance (kVA)",
+                legend_title_text="",
+                hovermode="closest",
+                height=520,
+                margin=dict(l=20, r=20, t=65, b=20),
+            )
+            fig_pma_daily.update_yaxes(rangemode="tozero")
+            st.plotly_chart(
+                fig_pma_daily,
+                use_container_width=True,
+                key="pma_daily_chart",
+            )
+
+            st.markdown("### Puissance max quotidienne moyenne par jour de la semaine")
+
+            fig_pma_weekday = go.Figure()
+            for series in available_pma:
+                fig_pma_weekday.add_trace(
+                    go.Scatter(
+                        x=pma_weekday["Jour"],
+                        y=pma_weekday[series],
+                        mode="markers",
+                        marker=dict(size=12),
+                        name=f"Moyenne de {series}",
+                        hovertemplate=(
+                            "%{x}<br>"
+                            + f"Moyenne {series} : "
+                            + "%{y:.2f} kVA<extra></extra>"
+                        ),
+                    )
+                )
+
+            if subscribed_kva > 0:
+                fig_pma_weekday.add_hline(
+                    y=subscribed_kva,
+                    line_dash="dash",
+                    annotation_text=f"Puissance souscrite ({subscribed_kva:g} kVA)",
+                    annotation_position="top left",
+                )
+
+            fig_pma_weekday.update_layout(
+                title="Puissance max quotidienne moyenne - kVA",
+                xaxis_title="Jour de la semaine",
+                yaxis_title="Puissance (kVA)",
+                legend_title_text="",
+                height=520,
+                margin=dict(l=20, r=20, t=65, b=20),
+            )
+            fig_pma_weekday.update_yaxes(rangemode="tozero")
+            st.plotly_chart(
+                fig_pma_weekday,
+                use_container_width=True,
+                key="pma_weekday_chart",
+            )
+
+            with st.expander("Voir les données PMA"):
+                display_pma = pma_daily.copy()
+                display_pma["Date"] = display_pma["Date"].dt.strftime("%d/%m/%Y")
+                display_cols = ["Date", "Jour"] + available_pma
+                st.dataframe(
+                    display_pma[display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        except Exception as exc:
+            st.error(f"Impossible d'analyser le fichier PMA : {exc}")
+
 with tab_tariff:
     st.subheader("Analyse tarifaire HP / HC et saison haute / saison basse")
 
@@ -8566,3 +8921,4 @@ with tab_quality:
 # ============================================================
 # EXPORT
 # ============================================================
+
