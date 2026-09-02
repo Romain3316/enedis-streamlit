@@ -1379,8 +1379,8 @@ def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
     df["Horodate"] = pd.to_datetime(
         df["Horodate"],
+        format="%Y-%m-%d %H:%M:%S",
         errors="coerce",
-        dayfirst=True,
     )
     df["Valeur"] = pd.to_numeric(
         df["Valeur"].astype(str).str.replace(",", ".", regex=False),
