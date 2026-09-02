@@ -1310,11 +1310,11 @@ def render_header() -> None:
                 <div class="cma-eyebrow">
                     CMA Nouvelle-Aquitaine · Outil métier
                 </div>
-                <h1>Pré-diagnostic photovoltaïque</h1>
+                <h1>Analyse énergétique</h1>
                 <div class="cma-title-line"></div>
                 <p>
-                    Analyse automatisée des courbes de charge Enedis et
-                    génération d'indicateurs d'aide au diagnostic énergétique.
+                    Analyse des consommations électriques, des puissances maximales Enedis
+                    et évaluation de l'opportunité photovoltaïque.
                 </p>
             </div>
             {logo_html}
@@ -5010,6 +5010,213 @@ def make_excel_export(
     return output.getvalue()
 
 
+
+def render_pma_analysis(pma_uploaded_file) -> None:
+    """Affiche le module PMA indépendamment de la courbe de charge."""
+    st.subheader("Puissance instantanée maximale quotidienne")
+    st.caption(
+        "Analyse complémentaire de la courbe de charge : ce fichier Enedis décrit "
+        "les pointes instantanées maximales quotidiennes en puissance apparente (kVA), "
+        "et non une puissance moyenne sur un pas de temps."
+    )
+
+    if pma_uploaded_file is None:
+        st.info(
+            "Importez le fichier PMA Enedis pour afficher les pointes quotidiennes "
+            "et leur moyenne par jour de la semaine."
+        )
+    else:
+        try:
+            pma_df = read_enedis_pma_file(
+                pma_uploaded_file.getvalue(),
+                pma_uploaded_file.name,
+            )
+            pma_daily = build_pma_daily_wide(pma_df)
+            pma_weekday = build_pma_weekday_means(pma_daily)
+
+            available_pma = [
+                c for c in ["PMA", "PMA1", "PMA2", "PMA3"]
+                if c in pma_daily.columns
+            ]
+            is_three_phase = all(
+                phase in available_pma for phase in ["PMA1", "PMA2", "PMA3"]
+            )
+
+            pma_period_min = pma_daily["Date"].min()
+            pma_period_max = pma_daily["Date"].max()
+
+            st.success(
+                f"Fichier PMA chargé : {len(pma_daily):,} journées du "
+                f"{pma_period_min:%d/%m/%Y} au {pma_period_max:%d/%m/%Y} · "
+                f"{'Triphasé détecté' if is_three_phase else 'PMA détectée'}."
+                .replace(",", " ")
+            )
+
+            subscribed_kva = st.number_input(
+                "Puissance souscrite (kVA)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=36.0,
+                step=1.0,
+                key="pma_subscribed_kva",
+                help="Valeur contractuelle utilisée comme ligne de référence sur les graphiques.",
+            )
+
+            metric_cols = st.columns(4)
+            pma_max = (
+                float(pma_daily["PMA"].max())
+                if "PMA" in pma_daily.columns
+                else float("nan")
+            )
+            pma_mean = (
+                float(pma_daily["PMA"].mean())
+                if "PMA" in pma_daily.columns
+                else float("nan")
+            )
+            days_90 = (
+                int((pma_daily["PMA"] >= subscribed_kva * 0.90).sum())
+                if "PMA" in pma_daily.columns and subscribed_kva > 0
+                else 0
+            )
+            days_over = (
+                int((pma_daily["PMA"] > subscribed_kva).sum())
+                if "PMA" in pma_daily.columns and subscribed_kva > 0
+                else 0
+            )
+
+            with metric_cols[0]:
+                st.metric(
+                    "PMA maximale observée",
+                    f"{pma_max:.1f} kVA" if pd.notna(pma_max) else "—",
+                )
+            with metric_cols[1]:
+                st.metric(
+                    "PMA quotidienne moyenne",
+                    f"{pma_mean:.1f} kVA" if pd.notna(pma_mean) else "—",
+                )
+            with metric_cols[2]:
+                st.metric("Jours ≥ 90 % du souscrit", days_90)
+            with metric_cols[3]:
+                st.metric("Jours > puissance souscrite", days_over)
+
+            if (
+                is_three_phase
+                and set(["PMA1", "PMA2", "PMA3"]).issubset(pma_daily.columns)
+            ):
+                phase_means = pma_daily[["PMA1", "PMA2", "PMA3"]].mean()
+                phase_spread = float(phase_means.max() - phase_means.min())
+                st.caption(
+                    "Moyenne des maxima par phase : "
+                    + " · ".join(
+                        f"{phase} {phase_means[phase]:.1f} kVA"
+                        for phase in ["PMA1", "PMA2", "PMA3"]
+                    )
+                    + f" · Écart entre phases : {phase_spread:.1f} kVA"
+                )
+
+            st.markdown("### Évolution de la puissance maximale quotidienne")
+
+            fig_pma_daily = go.Figure()
+            pma_labels = {
+                "PMA": "PMA",
+                "PMA1": "PMA1",
+                "PMA2": "PMA2",
+                "PMA3": "PMA3",
+            }
+            for series in available_pma:
+                fig_pma_daily.add_trace(
+                    go.Scatter(
+                        x=pma_daily["Date"],
+                        y=pma_daily[series],
+                        mode="markers",
+                        name=pma_labels[series],
+                        hovertemplate=(
+                            "%{x|%d/%m/%Y}<br>"
+                            + series
+                            + " : %{y:.2f} kVA<extra></extra>"
+                        ),
+                    )
+                )
+
+            if subscribed_kva > 0:
+                fig_pma_daily.add_hline(
+                    y=subscribed_kva,
+                    line_dash="dash",
+                    annotation_text=f"P souscrite ({subscribed_kva:g} kVA)",
+                    annotation_position="top left",
+                )
+
+            fig_pma_daily.update_layout(
+                title="Puissance max quotidienne - kVA",
+                xaxis_title="Date",
+                yaxis_title="Puissance (kVA)",
+                legend_title_text="",
+                hovermode="closest",
+                height=520,
+                margin=dict(l=20, r=20, t=65, b=20),
+            )
+            fig_pma_daily.update_yaxes(rangemode="tozero")
+            st.plotly_chart(
+                fig_pma_daily,
+                use_container_width=True,
+                key="pma_daily_chart",
+            )
+
+            st.markdown("### Puissance max quotidienne moyenne par jour de la semaine")
+
+            fig_pma_weekday = go.Figure()
+            for series in available_pma:
+                fig_pma_weekday.add_trace(
+                    go.Scatter(
+                        x=pma_weekday["Jour"],
+                        y=pma_weekday[series],
+                        mode="markers",
+                        marker=dict(size=12),
+                        name=f"Moyenne de {series}",
+                        hovertemplate=(
+                            "%{x}<br>"
+                            + f"Moyenne {series} : "
+                            + "%{y:.2f} kVA<extra></extra>"
+                        ),
+                    )
+                )
+
+            if subscribed_kva > 0:
+                fig_pma_weekday.add_hline(
+                    y=subscribed_kva,
+                    line_dash="dash",
+                    annotation_text=f"Puissance souscrite ({subscribed_kva:g} kVA)",
+                    annotation_position="top left",
+                )
+
+            fig_pma_weekday.update_layout(
+                title="Puissance max quotidienne moyenne - kVA",
+                xaxis_title="Jour de la semaine",
+                yaxis_title="Puissance (kVA)",
+                legend_title_text="",
+                height=520,
+                margin=dict(l=20, r=20, t=65, b=20),
+            )
+            fig_pma_weekday.update_yaxes(rangemode="tozero")
+            st.plotly_chart(
+                fig_pma_weekday,
+                use_container_width=True,
+                key="pma_weekday_chart",
+            )
+
+            with st.expander("Voir les données PMA"):
+                display_pma = pma_daily.copy()
+                display_pma["Date"] = display_pma["Date"].dt.strftime("%d/%m/%Y")
+                display_cols = ["Date", "Jour"] + available_pma
+                st.dataframe(
+                    display_pma[display_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        except Exception as exc:
+            st.error(f"Impossible d'analyser le fichier PMA : {exc}")
+
 # ============================================================
 # ACCUEIL
 # ============================================================
@@ -5021,10 +5228,10 @@ st.markdown(
     <div class="intro-card">
         <div class="intro-icon">⚡</div>
         <div>
-            <strong>Analysez un fichier Enedis en quelques secondes.</strong><br>
-            L'application transforme automatiquement les courbes de charge en
-            profils horaires, consommations journalières, tableaux thermiques
-            et indicateurs utiles au pré-diagnostic photovoltaïque.
+            <strong>Analysez les données énergétiques Enedis en quelques secondes.</strong><br>
+            Courbes de charge et puissances maximales peuvent être étudiées
+            séparément ou conjointement, avec un module photovoltaïque lorsque
+            les données de consommation sont disponibles.
         </div>
     </div>
     """,
@@ -5040,44 +5247,67 @@ with st.sidebar:
     st.markdown("## 1. Import")
 
     uploaded_file = st.file_uploader(
-        "Fichier Enedis",
+        "Courbe de charge Enedis",
         type=["csv", "xlsx", "xls"],
-        help="Colonnes obligatoires : Horodate et Valeur.",
+        help="Fichier de courbe de charge avec les colonnes Horodate et Valeur.",
+        key="load_curve_file",
+    )
+
+    pma_uploaded_file = st.file_uploader(
+        "Puissances maximales Enedis (PMA)",
+        type=["csv", "xlsx", "xls"],
+        help=(
+            "Fichier indépendant contenant PMA et, en triphasé, "
+            "PMA1, PMA2 et PMA3."
+        ),
+        key="pma_uploaded_file",
     )
 
 if uploaded_file is None:
+    if pma_uploaded_file is not None:
+        st.markdown("## ⚡ Analyse des puissances maximales")
+        st.caption(
+            "Mode autonome : aucune courbe de charge n'est nécessaire pour "
+            "analyser les puissances maximales."
+        )
+        render_pma_analysis(pma_uploaded_file)
+        st.stop()
+
     st.markdown(
         """
         <div class="feature-grid">
             <div class="feature-card">
-                <div class="feature-icon">📂</div>
-                <h3>1. Importer</h3>
+                <div class="feature-icon">📈</div>
+                <h3>Courbe de charge</h3>
                 <p>
-                    Déposez un export Enedis au format CSV ou Excel
-                    depuis le panneau latéral.
+                    Analysez les consommations, profils horaires, périodes
+                    tarifaires et l'opportunité photovoltaïque.
                 </p>
             </div>
             <div class="feature-card">
-                <div class="feature-icon">📊</div>
-                <h3>2. Analyser</h3>
+                <div class="feature-icon">⚡</div>
+                <h3>Puissances maximales</h3>
                 <p>
-                    Obtenez les profils de charge, consommations,
-                    tableaux thermiques et contrôles qualité.
+                    Analysez un fichier PMA indépendamment, même lorsque la
+                    courbe de charge n'est pas disponible.
                 </p>
             </div>
             <div class="feature-card">
-                <div class="feature-icon">📥</div>
-                <h3>3. Exporter</h3>
+                <div class="feature-icon">☀️</div>
+                <h3>Photovoltaïque</h3>
                 <p>
-                    Téléchargez un classeur Excel structuré,
-                    prêt à être exploité dans le diagnostic.
+                    Lorsque la courbe de charge est disponible, évaluez
+                    l'adéquation avec une production photovoltaïque.
                 </p>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
+    st.info(
+        "Importez une courbe de charge ou un fichier de puissances maximales "
+        "depuis le panneau latéral."
+    )
     st.stop()
 
 
@@ -7603,220 +7833,7 @@ with tab_solar:
 
 
 with tab_pma:
-    st.subheader("Puissance instantanée maximale quotidienne")
-    st.caption(
-        "Analyse complémentaire de la courbe de charge : ce fichier Enedis décrit "
-        "les pointes instantanées maximales quotidiennes en puissance apparente (kVA), "
-        "et non une puissance moyenne sur un pas de temps."
-    )
-
-    pma_uploaded_file = st.file_uploader(
-        "Importer le fichier Enedis des puissances maximales quotidiennes",
-        type=["csv", "xlsx", "xls"],
-        key="pma_uploaded_file",
-        help=(
-            "Fichier Enedis contenant les grandeurs PMA et, en triphasé, "
-            "PMA1, PMA2 et PMA3."
-        ),
-    )
-
-    if pma_uploaded_file is None:
-        st.info(
-            "Importez le fichier PMA Enedis pour afficher les pointes quotidiennes "
-            "et leur moyenne par jour de la semaine."
-        )
-    else:
-        try:
-            pma_df = read_enedis_pma_file(
-                pma_uploaded_file.getvalue(),
-                pma_uploaded_file.name,
-            )
-            pma_daily = build_pma_daily_wide(pma_df)
-            pma_weekday = build_pma_weekday_means(pma_daily)
-
-            available_pma = [
-                c for c in ["PMA", "PMA1", "PMA2", "PMA3"]
-                if c in pma_daily.columns
-            ]
-            is_three_phase = all(
-                phase in available_pma for phase in ["PMA1", "PMA2", "PMA3"]
-            )
-
-            pma_period_min = pma_daily["Date"].min()
-            pma_period_max = pma_daily["Date"].max()
-
-            st.success(
-                f"Fichier PMA chargé : {len(pma_daily):,} journées du "
-                f"{pma_period_min:%d/%m/%Y} au {pma_period_max:%d/%m/%Y} · "
-                f"{'Triphasé détecté' if is_three_phase else 'PMA détectée'}."
-                .replace(",", " ")
-            )
-
-            subscribed_kva = st.number_input(
-                "Puissance souscrite (kVA)",
-                min_value=0.0,
-                max_value=10000.0,
-                value=36.0,
-                step=1.0,
-                key="pma_subscribed_kva",
-                help="Valeur contractuelle utilisée comme ligne de référence sur les graphiques.",
-            )
-
-            metric_cols = st.columns(4)
-            pma_max = (
-                float(pma_daily["PMA"].max())
-                if "PMA" in pma_daily.columns
-                else float("nan")
-            )
-            pma_mean = (
-                float(pma_daily["PMA"].mean())
-                if "PMA" in pma_daily.columns
-                else float("nan")
-            )
-            days_90 = (
-                int((pma_daily["PMA"] >= subscribed_kva * 0.90).sum())
-                if "PMA" in pma_daily.columns and subscribed_kva > 0
-                else 0
-            )
-            days_over = (
-                int((pma_daily["PMA"] > subscribed_kva).sum())
-                if "PMA" in pma_daily.columns and subscribed_kva > 0
-                else 0
-            )
-
-            with metric_cols[0]:
-                st.metric(
-                    "PMA maximale observée",
-                    f"{pma_max:.1f} kVA" if pd.notna(pma_max) else "—",
-                )
-            with metric_cols[1]:
-                st.metric(
-                    "PMA quotidienne moyenne",
-                    f"{pma_mean:.1f} kVA" if pd.notna(pma_mean) else "—",
-                )
-            with metric_cols[2]:
-                st.metric("Jours ≥ 90 % du souscrit", days_90)
-            with metric_cols[3]:
-                st.metric("Jours > puissance souscrite", days_over)
-
-            if (
-                is_three_phase
-                and set(["PMA1", "PMA2", "PMA3"]).issubset(pma_daily.columns)
-            ):
-                phase_means = pma_daily[["PMA1", "PMA2", "PMA3"]].mean()
-                phase_spread = float(phase_means.max() - phase_means.min())
-                st.caption(
-                    "Moyenne des maxima par phase : "
-                    + " · ".join(
-                        f"{phase} {phase_means[phase]:.1f} kVA"
-                        for phase in ["PMA1", "PMA2", "PMA3"]
-                    )
-                    + f" · Écart entre phases : {phase_spread:.1f} kVA"
-                )
-
-            st.markdown("### Évolution de la puissance maximale quotidienne")
-
-            fig_pma_daily = go.Figure()
-            pma_labels = {
-                "PMA": "PMA",
-                "PMA1": "PMA1",
-                "PMA2": "PMA2",
-                "PMA3": "PMA3",
-            }
-            for series in available_pma:
-                fig_pma_daily.add_trace(
-                    go.Scatter(
-                        x=pma_daily["Date"],
-                        y=pma_daily[series],
-                        mode="markers",
-                        name=pma_labels[series],
-                        hovertemplate=(
-                            "%{x|%d/%m/%Y}<br>"
-                            + series
-                            + " : %{y:.2f} kVA<extra></extra>"
-                        ),
-                    )
-                )
-
-            if subscribed_kva > 0:
-                fig_pma_daily.add_hline(
-                    y=subscribed_kva,
-                    line_dash="dash",
-                    annotation_text=f"P souscrite ({subscribed_kva:g} kVA)",
-                    annotation_position="top left",
-                )
-
-            fig_pma_daily.update_layout(
-                title="Puissance max quotidienne - kVA",
-                xaxis_title="Date",
-                yaxis_title="Puissance (kVA)",
-                legend_title_text="",
-                hovermode="closest",
-                height=520,
-                margin=dict(l=20, r=20, t=65, b=20),
-            )
-            fig_pma_daily.update_yaxes(rangemode="tozero")
-            st.plotly_chart(
-                fig_pma_daily,
-                use_container_width=True,
-                key="pma_daily_chart",
-            )
-
-            st.markdown("### Puissance max quotidienne moyenne par jour de la semaine")
-
-            fig_pma_weekday = go.Figure()
-            for series in available_pma:
-                fig_pma_weekday.add_trace(
-                    go.Scatter(
-                        x=pma_weekday["Jour"],
-                        y=pma_weekday[series],
-                        mode="markers",
-                        marker=dict(size=12),
-                        name=f"Moyenne de {series}",
-                        hovertemplate=(
-                            "%{x}<br>"
-                            + f"Moyenne {series} : "
-                            + "%{y:.2f} kVA<extra></extra>"
-                        ),
-                    )
-                )
-
-            if subscribed_kva > 0:
-                fig_pma_weekday.add_hline(
-                    y=subscribed_kva,
-                    line_dash="dash",
-                    annotation_text=f"Puissance souscrite ({subscribed_kva:g} kVA)",
-                    annotation_position="top left",
-                )
-
-            fig_pma_weekday.update_layout(
-                title="Puissance max quotidienne moyenne - kVA",
-                xaxis_title="Jour de la semaine",
-                yaxis_title="Puissance (kVA)",
-                legend_title_text="",
-                height=520,
-                margin=dict(l=20, r=20, t=65, b=20),
-            )
-            fig_pma_weekday.update_yaxes(rangemode="tozero")
-            st.plotly_chart(
-                fig_pma_weekday,
-                use_container_width=True,
-                key="pma_weekday_chart",
-            )
-
-            with st.expander("Voir les données PMA"):
-                display_pma = pma_daily.copy()
-                display_pma["Date"] = display_pma["Date"].dt.strftime("%d/%m/%Y")
-                display_cols = ["Date", "Jour"] + available_pma
-                st.dataframe(
-                    display_pma[display_cols],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-        except Exception as exc:
-            st.error(f"Impossible d'analyser le fichier PMA : {exc}")
-
+    render_pma_analysis(pma_uploaded_file)
 with tab_tariff:
     st.subheader("Analyse tarifaire HP / HC et saison haute / saison basse")
 
