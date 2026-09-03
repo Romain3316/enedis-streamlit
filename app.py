@@ -1462,7 +1462,91 @@ def build_pma_weekday_means(pma_daily: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
+def read_geredis_file(file_bytes: bytes) -> pd.DataFrame:
+    """Convertit une courbe de charge GEREDIS .txt (6 valeurs de 10 min par ligne).
+
+    Convention GEREDIS : l'horodate portée par la ligne correspond à la FIN
+    de l'intervalle de la première valeur. Les cinq valeurs suivantes se
+    terminent respectivement à +10, +20, +30, +40 et +50 minutes.
+    Les valeurs sont des puissances moyennes appelées, interprétées en kW.
+    """
+    text = None
+    last_error = None
+    for encoding in ("utf-8-sig", "latin-1"):
+        try:
+            text = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    if text is None:
+        raise ValueError("Impossible de décoder le fichier GEREDIS.") from last_error
+
+    rows = []
+    malformed = 0
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = line.split()
+        if len(parts) < 8:
+            malformed += 1
+            continue
+
+        base_time = pd.to_datetime(
+            f"{parts[0]} {parts[1]}",
+            format="%d/%m/%Y %H:%M",
+            errors="coerce",
+        )
+        if pd.isna(base_time):
+            malformed += 1
+            continue
+
+        values = parts[2:8]
+        for offset, raw_value in enumerate(values):
+            if str(raw_value).strip().lower() in {"null", "nan", "na", "-"}:
+                continue
+
+            value = pd.to_numeric(
+                str(raw_value).replace(",", "."),
+                errors="coerce",
+            )
+            if pd.isna(value):
+                continue
+
+            rows.append(
+                {
+                    "Unité": "kW",
+                    "Horodate": base_time + pd.Timedelta(minutes=10 * offset),
+                    "Valeur": float(value),
+                    "Nature": "Puissance moyenne appelée GEREDIS",
+                    "Pas": "PT10M",
+                }
+            )
+
+    if not rows:
+        raise ValueError(
+            "Aucune donnée exploitable n'a été trouvée dans le fichier GEREDIS."
+        )
+
+    df = pd.DataFrame(rows)
+    # Ne pas supprimer les doublons : lors du passage à l'heure d'hiver,
+    # GEREDIS fournit bien deux séries pour l'heure répétée.
+    df = df.sort_values("Horodate", kind="stable").reset_index(drop=True)
+    df.attrs["source_format"] = "GEREDIS"
+    df.attrs["malformed_lines"] = malformed
+    return df
+
+
+@st.cache_data(show_spinner=False)
 def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    # Le moteur historique conserve ce nom pour éviter toute régression,
+    # mais il accepte désormais aussi les courbes de charge GEREDIS .txt.
+    if filename.lower().endswith(".txt"):
+        return read_geredis_file(file_bytes)
+
     buffer = BytesIO(file_bytes)
 
     if filename.lower().endswith(".csv"):
@@ -1528,6 +1612,7 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError("Aucune donnée exploitable n'a été trouvée.")
 
+    df.attrs["source_format"] = "ENEDIS"
     return df
 
 
@@ -5247,9 +5332,13 @@ with st.sidebar:
     st.markdown("## 1. Import")
 
     uploaded_file = st.file_uploader(
-        "Courbe de charge Enedis",
-        type=["csv", "xlsx", "xls"],
-        help="Fichier de courbe de charge avec les colonnes Horodate et Valeur.",
+        "Courbe de charge Enedis ou GEREDIS",
+        type=["csv", "xlsx", "xls", "txt"],
+        help=(
+            "Enedis : CSV/Excel avec les colonnes Horodate et Valeur. "
+            "GEREDIS : fichier .txt avec 6 valeurs de puissance par heure "
+            "(pas de 10 minutes)."
+        ),
         key="load_curve_file",
     )
 
@@ -5305,7 +5394,7 @@ if uploaded_file is None:
         unsafe_allow_html=True,
     )
     st.info(
-        "Importez une courbe de charge ou un fichier de puissances maximales "
+        "Importez une courbe de charge Enedis/GEREDIS ou un fichier de puissances maximales "
         "depuis le panneau latéral."
     )
     st.stop()
