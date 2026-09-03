@@ -5767,7 +5767,7 @@ with st.sidebar:
         )
 
     annual_subscription_eur = st.number_input(
-        "Abonnement annuel (€ HT)",
+        "Part fixe annuelle (€ HT)",
         min_value=0.0,
         max_value=100000.0,
         value=300.0,
@@ -6070,6 +6070,18 @@ hp_winter_kwh = float(tariff_values.get("HP hiver", 0))
 hc_winter_kwh = float(tariff_values.get("HC hiver", 0))
 hp_summer_kwh = float(tariff_values.get("HP été", 0))
 hc_summer_kwh = float(tariff_values.get("HC été", 0))
+
+tariff_price_map = {
+    "HP hiver": hp_winter_electricity_price,
+    "HC hiver": hc_winter_electricity_price,
+    "HP été": hp_summer_electricity_price,
+    "HC été": hc_summer_electricity_price,
+}
+tariff_summary_df["Prix_unitaire_EUR_kWh_HT"] = tariff_summary_df["Categorie_tarifaire"].map(tariff_price_map).fillna(0.0)
+tariff_summary_df["Montant_EUR_HT"] = tariff_summary_df["Consommation_kWh"] * tariff_summary_df["Prix_unitaire_EUR_kWh_HT"]
+tariff_variable_cost_eur = float(tariff_summary_df["Montant_EUR_HT"].sum())
+tariff_fixed_cost_eur = float(annual_subscription_eur)
+tariff_total_cost_eur = tariff_variable_cost_eur + tariff_fixed_cost_eur
 
 total_kwh = filtered_df["Energie_kWh"].sum()
 average_daily_kwh = daily_df["Consommation_kWh"].mean()
@@ -7268,6 +7280,12 @@ with tab_dashboard:
         ),
     )
 
+    st.markdown("### Coût de l'électricité")
+    synth_cost1, synth_cost2, synth_cost3 = st.columns(3)
+    synth_cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
+    synth_cost2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
+    synth_cost3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
+
     chart1, chart2 = st.columns([1.5, 1])
 
     with chart1:
@@ -7992,6 +8010,25 @@ with tab_tariff:
         ),
     )
 
+    st.markdown("### Montants par plage horosaisonnière")
+    tariff_amount_display = tariff_summary_df[
+        ["Categorie_tarifaire", "Consommation_kWh", "Prix_unitaire_EUR_kWh_HT", "Montant_EUR_HT"]
+    ].copy()
+    tariff_amount_display.columns = ["Plage", "Consommation (kWh)", "Prix unitaire (€/kWh HT)", "Montant (€ HT)"]
+    st.dataframe(
+        tariff_amount_display.style.format({
+            "Consommation (kWh)": "{:,.0f}",
+            "Prix unitaire (€/kWh HT)": "{:.4f}",
+            "Montant (€ HT)": "{:,.2f}",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+    cost1, cost2, cost3 = st.columns(3)
+    cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
+    cost2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
+    cost3.metric("Total part fixe + part variable", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
+
     if coverage_ratio < 0.95:
         st.info(
             f"La période analysée couvre environ "
@@ -8447,7 +8484,7 @@ with tab_financial:
     e1.metric(
         "Facture annuelle de référence",
         f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HT",
-        help="Estimation annualisée à partir de la courbe de charge et des prix saisis, abonnement inclus.",
+        help="Estimation annualisée à partir de la courbe de charge et des prix saisis, part fixe incluse.",
     )
     e2.metric(
         "Économie d'autoconsommation",
