@@ -8162,7 +8162,14 @@ with tab_tariff:
 
     st.subheader("Tableau récapitulatif")
 
-    tariff_display = tariff_summary_df.copy()
+    tariff_display = tariff_summary_df[
+        [
+            "Categorie_tarifaire",
+            "Consommation_kWh",
+            "Nombre_intervalles",
+            "Part_pourcent",
+        ]
+    ].copy()
     tariff_display.columns = [
         "Catégorie",
         "Consommation (kWh)",
