@@ -6071,13 +6071,13 @@ hc_winter_kwh = float(tariff_values.get("HC hiver", 0))
 hp_summer_kwh = float(tariff_values.get("HP été", 0))
 hc_summer_kwh = float(tariff_values.get("HC été", 0))
 
-tariff_price_map = {
+tariff_period_price_map = {
     "HP hiver": hp_winter_electricity_price,
     "HC hiver": hc_winter_electricity_price,
     "HP été": hp_summer_electricity_price,
     "HC été": hc_summer_electricity_price,
 }
-tariff_summary_df["Prix_unitaire_EUR_kWh_HT"] = tariff_summary_df["Categorie_tarifaire"].map(tariff_price_map).fillna(0.0)
+tariff_summary_df["Prix_unitaire_EUR_kWh_HT"] = tariff_summary_df["Categorie_tarifaire"].map(tariff_period_price_map).fillna(0.0)
 tariff_summary_df["Montant_EUR_HT"] = tariff_summary_df["Consommation_kWh"] * tariff_summary_df["Prix_unitaire_EUR_kWh_HT"]
 tariff_variable_cost_eur = float(tariff_summary_df["Montant_EUR_HT"].sum())
 tariff_fixed_cost_eur = float(annual_subscription_eur)
