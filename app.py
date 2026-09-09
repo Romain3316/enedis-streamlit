@@ -1,4 +1,5 @@
 import base64
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -4098,6 +4099,7 @@ def create_cma_pdf_report(
     hourly_df: pd.DataFrame,
     filtered_df: pd.DataFrame,
     logo_path: Path | None,
+    report_notes: dict | None = None,
 ) -> bytes:
     output = BytesIO()
 
@@ -4968,7 +4970,27 @@ def create_cma_pdf_report(
     ]
     story.append(Table(recommendation_rows, colWidths=[15.8 * cm]))
 
-    story.append(Paragraph("10. Limites du pré-diagnostic", styles["CMA_H1"]))
+    report_notes = report_notes or {}
+    note_items = [
+        ("Contexte et informations connues", report_notes.get("context", "")),
+        ("Horaires / organisation de l'activité", report_notes.get("activity_hours", "")),
+        ("Équipements et usages identifiés", report_notes.get("equipment", "")),
+        ("Commentaire sur les profils de consommation", report_notes.get("profile", "")),
+        ("Commentaire sur la puissance", report_notes.get("power", "")),
+        ("Commentaire sur la tarification", report_notes.get("tariff", "")),
+        ("Analyse / observations photovoltaïques", report_notes.get("pv_observations", "")),
+        ("Préconisations et suites à donner", report_notes.get("recommendations", "")),
+        ("Commentaires complémentaires", report_notes.get("general", "")),
+    ]
+    filled_notes = [(title, value) for title, value in note_items if str(value).strip()]
+    if filled_notes:
+        story.append(Paragraph("10. Annotations du conseiller", styles["CMA_H1"]))
+        for note_title, note_value in filled_notes:
+            story.append(Paragraph(note_title, styles["CMA_H2"]))
+            story.append(Paragraph(safe_pdf_text(note_value).replace("\n", "<br/>"), styles["CMA_Body"]))
+        story.append(PageBreak())
+
+    story.append(Paragraph("11. Limites du pré-diagnostic", styles["CMA_H1"]))
     story.append(
         Paragraph(
             "Ce rapport repose sur les données Enedis importées et sur une "
@@ -4992,6 +5014,124 @@ def create_cma_pdf_report(
     doc.build(story)
     output.seek(0)
     return output.getvalue()
+
+
+
+def create_energy_prediagnostic_pdf(
+    company_name: str,
+    company_siret: str,
+    advisor_name: str,
+    diagnostic_date,
+    address_label: str,
+    source_filename: str,
+    period_start,
+    period_end,
+    source_unit: str,
+    time_step,
+    total_kwh: float,
+    average_daily_kwh: float,
+    maximum_power_kw: float,
+    monthly_df: pd.DataFrame,
+    weekday_hour_matrix: pd.DataFrame,
+    tariff_summary_df: pd.DataFrame,
+    tariff_variable_cost_eur: float,
+    tariff_fixed_cost_eur: float,
+    tariff_total_cost_eur: float,
+    tariff_score_data: dict,
+    report_notes: dict,
+    logo_path: Path | None,
+) -> bytes:
+    """Génère un pré-diagnostic énergétique centré sur les consommations électriques."""
+    output = BytesIO()
+    page_width, page_height = A4
+    cma_blue = colors.HexColor("#17365D")
+    cma_red = colors.HexColor("#E53935")
+    light_blue = colors.HexColor("#EAF1F8")
+    dark_text = colors.HexColor("#202735")
+
+    def draw_page(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(cma_blue)
+        canvas.rect(0, page_height - 1.15 * cm, page_width, 1.15 * cm, fill=1, stroke=0)
+        canvas.setFillColor(cma_red)
+        canvas.rect(page_width - 4.2 * cm, page_height - 1.15 * cm, 4.2 * cm, 1.15 * cm, fill=1, stroke=0)
+        canvas.setFillColor(colors.HexColor("#697589"))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(1.6 * cm, 0.8 * cm, "Pré-diagnostic énergétique - CMA Nouvelle-Aquitaine")
+        canvas.drawRightString(page_width - 1.6 * cm, 0.8 * cm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    frame = Frame(1.55 * cm, 1.35 * cm, page_width - 3.1 * cm, page_height - 2.9 * cm, id="normal")
+    doc = BaseDocTemplate(
+        output, pagesize=A4, leftMargin=1.55 * cm, rightMargin=1.55 * cm,
+        topMargin=1.55 * cm, bottomMargin=1.35 * cm,
+        title="Pré-diagnostic énergétique CMA", author="CMA Nouvelle-Aquitaine",
+    )
+    doc.addPageTemplates([PageTemplate(id="cma_energy", frames=[frame], onPage=draw_page)])
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="EN_Title", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=24, leading=29, textColor=cma_blue, alignment=TA_LEFT, spaceAfter=12))
+    styles.add(ParagraphStyle(name="EN_Subtitle", parent=styles["Normal"], fontSize=11.5, leading=16, textColor=dark_text, spaceAfter=12))
+    styles.add(ParagraphStyle(name="EN_H1", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=17, leading=21, textColor=cma_blue, spaceBefore=8, spaceAfter=10))
+    styles.add(ParagraphStyle(name="EN_H2", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=12.5, leading=16, textColor=cma_red, spaceBefore=7, spaceAfter=6))
+    styles.add(ParagraphStyle(name="EN_Body", parent=styles["BodyText"], fontSize=9.5, leading=14, textColor=dark_text, spaceAfter=8))
+    styles.add(ParagraphStyle(name="EN_Small", parent=styles["BodyText"], fontSize=8, leading=11, textColor=colors.HexColor("#5E6878")))
+    styles.add(ParagraphStyle(name="EN_KPI", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=14, leading=17, textColor=cma_blue, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name="EN_Label", parent=styles["Normal"], fontSize=7.5, leading=10, textColor=colors.HexColor("#667287"), alignment=TA_CENTER))
+
+    story=[]
+    story.append(Spacer(1, .8*cm))
+    if logo_path and logo_path.exists():
+        story.append(Image(str(logo_path), width=6.0*cm, height=2.1*cm, kind="proportional")); story.append(Spacer(1,.4*cm))
+    story.append(Paragraph("Pré-diagnostic énergétique", styles["EN_Title"]))
+    story.append(Paragraph("Analyse préalable des consommations électriques destinée à préparer l'entretien avec l'entreprise et à identifier les points à investiguer.", styles["EN_Subtitle"]))
+    cover=[
+        ["Entreprise", safe_pdf_text(company_name or "Non renseignée")],
+        ["Adresse", safe_pdf_text(address_label or "Non renseignée")],
+        ["SIRET", safe_pdf_text(company_siret or "Non renseigné")],
+        ["Conseiller CMA", safe_pdf_text(advisor_name or "Non renseigné")],
+        ["Date", diagnostic_date.strftime("%d/%m/%Y")],
+        ["Période analysée", f"{period_start:%d/%m/%Y} au {period_end:%d/%m/%Y}"],
+        ["Statut", safe_pdf_text(report_notes.get("status", "Brouillon"))],
+    ]
+    t=Table(cover,colWidths=[4.6*cm,11.2*cm]); t.setStyle(TableStyle([("BACKGROUND",(0,0),(0,-1),light_blue),("TEXTCOLOR",(0,0),(0,-1),cma_blue),("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("GRID",(0,0),(-1,-1),.4,colors.HexColor("#D8E0E8")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),8)])); story.append(t); story.append(Spacer(1,.7*cm))
+    story.append(Paragraph("<b>Important :</b> ce document est une analyse préalable fondée sur la courbe de charge disponible. Il ne constitue pas un audit énergétique réglementaire et doit être complété par la connaissance des équipements, des usages et du fonctionnement de l'entreprise.", styles["EN_Body"])); story.append(PageBreak())
+
+    story.append(Paragraph("1. Synthèse énergétique", styles["EN_H1"]))
+    kpis=[[Paragraph(f"{format_fr(total_kwh,0)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(average_daily_kwh,1)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(maximum_power_kw,1)} kW",styles["EN_KPI"])],[Paragraph("Consommation totale",styles["EN_Label"]),Paragraph("Moyenne journalière",styles["EN_Label"]),Paragraph("Pic de puissance moyen sur intervalle",styles["EN_Label"])],[Paragraph(f"{format_fr(tariff_variable_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_fixed_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_total_cost_eur,0)} € HT",styles["EN_KPI"])],[Paragraph("Part variable estimée",styles["EN_Label"]),Paragraph("Part fixe",styles["EN_Label"]),Paragraph("Total estimé",styles["EN_Label"])]]
+    kt=Table(kpis,colWidths=[5.25*cm]*3); kt.setStyle(TableStyle([("BOX",(0,0),(-1,-1),.7,colors.HexColor("#DDE4EB")),("INNERGRID",(0,0),(-1,-1),.4,colors.HexColor("#E6EBF0")),("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8)])); story.append(kt); story.append(Spacer(1,.4*cm))
+    if report_notes.get("context"): story.append(Paragraph("Contexte connu avant / pendant l'entretien",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["context"]).replace("\n","<br/>"),styles["EN_Body"]))
+    if report_notes.get("activity_hours"): story.append(Paragraph("Horaires et organisation de l'activité",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["activity_hours"]).replace("\n","<br/>"),styles["EN_Body"]))
+    if report_notes.get("equipment"): story.append(Paragraph("Équipements / usages identifiés",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["equipment"]).replace("\n","<br/>"),styles["EN_Body"]))
+
+    figm=px.bar(monthly_df,x="Mois_date",y="Consommation_kWh",title="Consommation mensuelle",labels={"Mois_date":"Mois","Consommation_kWh":"Consommation (kWh)"},color_discrete_sequence=["#17365D"]); figm.update_layout(template="plotly_white",showlegend=False)
+    story.append(Image(figure_to_png_bytes(figm),width=16.5*cm,height=7.4*cm)); story.append(PageBreak())
+
+    story.append(Paragraph("2. Profil de consommation",styles["EN_H1"]))
+    story.append(Paragraph("La matrice suivante présente la puissance moyenne appelée selon le jour de la semaine et l'heure. Elle sert à repérer les périodes d'activité, les consommations résiduelles et les pointes récurrentes.",styles["EN_Body"]))
+    matrix=weekday_hour_matrix.copy().round(1)
+    rows=[["Heure"]+list(matrix.columns)]
+    for hour,row in matrix.iterrows(): rows.append([f"{int(hour):02d}h"]+["" if pd.isna(v) else f"{v:.1f}" for v in row.values])
+    mt=Table(rows,colWidths=[1.7*cm]+[2.0*cm]*len(matrix.columns),repeatRows=1); mt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),cma_blue),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),6.8),("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D8E0E8")),("ALIGN",(1,1),(-1,-1),"CENTER"),("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)])); story.append(mt)
+    if report_notes.get("profile"): story.append(Paragraph("Commentaire du conseiller",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["profile"]).replace("\n","<br/>"),styles["EN_Body"]))
+    story.append(PageBreak())
+
+    story.append(Paragraph("3. Tarification et périodes",styles["EN_H1"]))
+    rows=[["Plage","Consommation","Part","Prix unitaire","Montant"]]
+    for _,r in tariff_summary_df.iterrows(): rows.append([safe_pdf_text(r["Categorie_tarifaire"]),f"{format_fr(r['Consommation_kWh'],0)} kWh",f"{format_fr(r['Part_pourcent'],1)} %",f"{format_fr(r.get('Prix_unitaire_EUR_kWh_HT',0),4)} €/kWh",f"{format_fr(r.get('Montant_EUR_HT',0),2)} €"])
+    tt=Table(rows,colWidths=[3.3*cm,3.3*cm,2.4*cm,3.3*cm,3.3*cm],repeatRows=1); tt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),cma_blue),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),7.5),("GRID",(0,0),(-1,-1),.4,colors.HexColor("#D8E0E8")),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)])); story.append(tt); story.append(Spacer(1,.35*cm))
+    story.append(Paragraph(f"Indice de potentiel d'optimisation tarifaire CMA : <b>{tariff_score_data.get('score',0):.0f}/100 — {safe_pdf_text(tariff_score_data.get('label',''))}</b>. Cet indice constitue un repère de lecture et ne conclut pas à lui seul à la pertinence d'un changement de contrat.",styles["EN_Body"]))
+    if report_notes.get("tariff"): story.append(Paragraph("Commentaire du conseiller",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["tariff"]).replace("\n","<br/>"),styles["EN_Body"]))
+    if report_notes.get("power"): story.append(Paragraph("Puissance / pointes",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["power"]).replace("\n","<br/>"),styles["EN_Body"]))
+
+    story.append(PageBreak()); story.append(Paragraph("4. Préparation et suites du rendez-vous",styles["EN_H1"]))
+    fields=[("Points à approfondir",report_notes.get("investigate","")),("Préconisations / pistes d'action",report_notes.get("recommendations","")),("Commentaires complémentaires",report_notes.get("general",""))]
+    any_field=False
+    for title,val in fields:
+        if str(val).strip(): any_field=True; story.append(Paragraph(title,styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(val).replace("\n","<br/>"),styles["EN_Body"]))
+    if not any_field: story.append(Paragraph("Aucune annotation n'a encore été renseignée. Cette page peut être complétée après l'entretien puis le rapport régénéré.",styles["EN_Body"]))
+    story.append(Spacer(1,.4*cm)); story.append(Paragraph(f"Fichier analysé : {safe_pdf_text(source_filename)} - unité source : {safe_pdf_text(source_unit)} - pas source : {safe_pdf_text(time_step)}.",styles["EN_Small"]))
+    doc.build(story); output.seek(0); return output.getvalue()
 
 
 def format_fr(value: float, decimals: int = 1) -> str:
@@ -5352,6 +5492,37 @@ with st.sidebar:
         key="pma_uploaded_file",
     )
 
+    st.markdown("---")
+    st.markdown("### Reprendre un brouillon")
+    draft_uploaded_file = st.file_uploader(
+        "Brouillon de pré-diagnostic (.json)",
+        type=["json"],
+        key="draft_uploaded_file",
+        help="Recharge les informations entreprise, le statut et toutes les annotations des livrables.",
+    )
+    if draft_uploaded_file is not None and st.button(
+        "↥ Charger le brouillon",
+        use_container_width=True,
+        key="load_draft_button",
+    ):
+        try:
+            draft_payload = json.loads(draft_uploaded_file.getvalue().decode("utf-8-sig"))
+            draft_values = draft_payload.get("fields", {})
+            date_value = draft_values.get("diagnostic_date")
+            if isinstance(date_value, str):
+                parsed_date = pd.to_datetime(date_value, errors="coerce")
+                if not pd.isna(parsed_date):
+                    draft_values["diagnostic_date"] = parsed_date.date()
+            for draft_key, draft_value in draft_values.items():
+                st.session_state[draft_key] = draft_value
+            st.session_state["draft_loaded_message"] = True
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Impossible de charger le brouillon : {exc}")
+
+    if st.session_state.pop("draft_loaded_message", False):
+        st.success("Brouillon rechargé. Les annotations et informations enregistrées ont été restaurées.")
+
 if uploaded_file is None:
     if pma_uploaded_file is not None:
         st.markdown("## ⚡ Analyse des puissances maximales")
@@ -5461,21 +5632,26 @@ with st.sidebar:
     company_name = st.text_input(
         "Nom de l'entreprise",
         placeholder="Ex. Atelier Dupont",
+        key="company_name",
     )
 
     company_siret = st.text_input(
         "SIRET (optionnel)",
         placeholder="Ex. 123 456 789 00012",
+        key="company_siret",
     )
 
     advisor_name = st.text_input(
         "Conseiller CMA",
         placeholder="Nom du conseiller",
+        key="advisor_name",
     )
 
+    if "diagnostic_date" not in st.session_state:
+        st.session_state["diagnostic_date"] = pd.Timestamp.today().date()
     diagnostic_date = st.date_input(
         "Date du diagnostic",
-        value=pd.Timestamp.today().date(),
+        key="diagnostic_date",
     )
 
     st.markdown("---")
@@ -5484,6 +5660,7 @@ with st.sidebar:
     company_address = st.text_input(
         "Adresse complète de l'entreprise",
         placeholder="Ex. 3 rue du 11 Novembre, 33000 Bordeaux",
+        key="company_address",
     )
 
     if st.button(
@@ -6497,8 +6674,83 @@ with nav_pv:
 with nav_report:
     st.markdown("## Rapport & exports")
     st.caption(
-        "Retrouver les exports de données et générer les livrables disponibles."
+        "Retrouver les exports de données, personnaliser les livrables et reprendre un brouillon ultérieurement."
     )
+
+    st.subheader("Personnalisation des livrables")
+    st.caption("Les champs sont facultatifs. Ils sont réutilisés dans le pré-diagnostic énergétique et, lorsque pertinent, dans le rapport photovoltaïque.")
+
+    report_status = st.selectbox(
+        "Statut du dossier",
+        ["Brouillon", "À compléter après rendez-vous", "Finalisé"],
+        key="report_status",
+    )
+    note_col1, note_col2 = st.columns(2)
+    with note_col1:
+        st.text_area("Contexte / informations connues", key="note_context", height=120, placeholder="Activité, organisation, éléments connus avant le rendez-vous…")
+        st.text_area("Horaires / organisation de l'activité", key="note_activity_hours", height=110, placeholder="Ex. lundi-vendredi 7h-18h, fermeture le week-end…")
+        st.text_area("Équipements / usages identifiés", key="note_equipment", height=120, placeholder="Froid, chauffage, ventilation, process, éclairage, air comprimé…")
+        st.text_area("Commentaire sur les profils de consommation", key="note_profile", height=120)
+    with note_col2:
+        st.text_area("Commentaire sur les puissances / pointes", key="note_power", height=120)
+        st.text_area("Commentaire sur la tarification", key="note_tariff", height=110)
+        st.text_area("Points à approfondir en rendez-vous", key="note_investigate", height=120)
+        st.text_area("Préconisations / pistes d'action", key="note_recommendations", height=120)
+
+    st.text_area("Analyse / observations photovoltaïques", key="note_pv_observations", height=120, help="Champ destiné principalement au livrable photovoltaïque.")
+    st.text_area("Commentaires complémentaires", key="note_general", height=100)
+
+    report_notes = {
+        "status": report_status,
+        "context": st.session_state.get("note_context", ""),
+        "activity_hours": st.session_state.get("note_activity_hours", ""),
+        "equipment": st.session_state.get("note_equipment", ""),
+        "profile": st.session_state.get("note_profile", ""),
+        "power": st.session_state.get("note_power", ""),
+        "tariff": st.session_state.get("note_tariff", ""),
+        "investigate": st.session_state.get("note_investigate", ""),
+        "recommendations": st.session_state.get("note_recommendations", ""),
+        "pv_observations": st.session_state.get("note_pv_observations", ""),
+        "general": st.session_state.get("note_general", ""),
+    }
+
+    draft_fields = {
+        "company_name": company_name,
+        "company_siret": company_siret,
+        "advisor_name": advisor_name,
+        "diagnostic_date": diagnostic_date.isoformat(),
+        "company_address": company_address,
+        "report_status": report_status,
+        "note_context": report_notes["context"],
+        "note_activity_hours": report_notes["activity_hours"],
+        "note_equipment": report_notes["equipment"],
+        "note_profile": report_notes["profile"],
+        "note_power": report_notes["power"],
+        "note_tariff": report_notes["tariff"],
+        "note_investigate": report_notes["investigate"],
+        "note_recommendations": report_notes["recommendations"],
+        "note_pv_observations": report_notes["pv_observations"],
+        "note_general": report_notes["general"],
+    }
+    draft_payload = {
+        "format": "cma-analyse-energetique-draft",
+        "version": 1,
+        "source_file": uploaded_file.name if uploaded_file is not None else "",
+        "fields": draft_fields,
+    }
+    draft_bytes = json.dumps(draft_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    draft_name = (company_name.strip().replace(" ", "_") if company_name.strip() else "entreprise")
+    st.download_button(
+        "💾 Sauvegarder le brouillon (.json)",
+        data=draft_bytes,
+        file_name=f"brouillon_analyse_energetique_{draft_name}.json",
+        mime="application/json",
+        use_container_width=True,
+        key="download_draft_json",
+    )
+    st.info("Le brouillon conserve les informations entreprise, le statut et toutes les annotations des deux livrables. La courbe de charge reste à recharger séparément.")
+
+    st.markdown("---")
     st.subheader("Exporter l'analyse")
 
     st.markdown("### Export dédié AutoCal-Sol")
@@ -7067,6 +7319,7 @@ with nav_report:
                 hourly_df=hourly_df,
                 filtered_df=filtered_df,
                 logo_path=report_logo_path,
+                report_notes=report_notes,
             )
         except Exception as exc:
             pdf_report_bytes = None
@@ -7104,37 +7357,72 @@ with nav_report:
         )
 
     st.markdown("---")
-    st.subheader("Rapport pédagogique CMA")
+    st.subheader("Livrables PDF CMA")
+    st.caption("Deux livrables distincts sont disponibles : un pré-diagnostic énergétique centré sur les consommations et le rapport d'opportunité photovoltaïque historique.")
 
-    if pdf_report_bytes:
-        pdf_filename_company = (
-            company_name.strip().replace(" ", "_")
-            if company_name.strip()
-            else "entreprise"
+    energy_address_label = (selected_location["label"] if selected_location is not None else company_address)
+    try:
+        energy_pdf_bytes = create_energy_prediagnostic_pdf(
+            company_name=company_name,
+            company_siret=company_siret,
+            advisor_name=advisor_name,
+            diagnostic_date=diagnostic_date,
+            address_label=energy_address_label,
+            source_filename=uploaded_file.name,
+            period_start=filtered_df["Horodate"].min(),
+            period_end=filtered_df["Horodate"].max(),
+            source_unit=source_unit,
+            time_step=time_step,
+            total_kwh=total_kwh,
+            average_daily_kwh=average_daily_kwh,
+            maximum_power_kw=maximum_power_kw,
+            monthly_df=monthly_df,
+            weekday_hour_matrix=weekday_hour_matrix,
+            tariff_summary_df=tariff_summary_df,
+            tariff_variable_cost_eur=tariff_variable_cost_eur,
+            tariff_fixed_cost_eur=tariff_fixed_cost_eur,
+            tariff_total_cost_eur=tariff_total_cost_eur,
+            tariff_score_data=tariff_score_data,
+            report_notes=report_notes,
+            logo_path=report_logo_path,
         )
+    except Exception as exc:
+        energy_pdf_bytes = None
+        st.error(f"Le pré-diagnostic énergétique n'a pas pu être généré. Détail : {exc}")
 
-        st.download_button(
-            "📄 Télécharger le rapport PDF CMA",
-            data=pdf_report_bytes,
-            file_name=(
-                f"pre_diagnostic_photovoltaique_"
-                f"{pdf_filename_company}.pdf"
-            ),
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    else:
-        st.info(
-            "Pour générer le rapport PDF, validez une adresse et "
-            "assurez-vous que les données PVGIS sont disponibles."
-        )
+    pdf_filename_company = company_name.strip().replace(" ", "_") if company_name.strip() else "entreprise"
+    report_col1, report_col2 = st.columns(2)
+    with report_col1:
+        st.markdown("#### ⚡ Pré-diagnostic énergétique")
+        st.caption("Utilisable dès la réception de la courbe de charge, avant ou après le rendez-vous.")
+        if energy_pdf_bytes:
+            st.download_button(
+                "📄 Télécharger le pré-diagnostic énergétique",
+                data=energy_pdf_bytes,
+                file_name=f"pre_diagnostic_energetique_{pdf_filename_company}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="download_energy_pdf",
+            )
+    with report_col2:
+        st.markdown("#### ☀️ Opportunité photovoltaïque")
+        st.caption("Conserve le livrable photovoltaïque et intègre désormais les annotations du conseiller.")
+        if pdf_report_bytes:
+            st.download_button(
+                "📄 Télécharger le rapport photovoltaïque",
+                data=pdf_report_bytes,
+                file_name=f"pre_diagnostic_photovoltaique_{pdf_filename_company}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="download_pv_pdf",
+            )
+        else:
+            st.info("Validez une adresse et assurez-vous que les données PVGIS sont disponibles pour générer ce livrable.")
 
     st.markdown(
         """
-        Le rapport PDF présente les résultats avec des explications simples,
-        des graphiques et des recommandations adaptées à un échange avec
-        l'artisan. Il reste un pré-diagnostic et ne remplace pas une étude
-        technique ou économique complète.
+        Le pré-diagnostic énergétique est une analyse préalable des consommations électriques.
+        Le rapport photovoltaïque reste un pré-diagnostic d'opportunité et ne remplace pas une étude technique ou économique complète.
         """
     )
 
