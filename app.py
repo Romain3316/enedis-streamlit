@@ -6677,28 +6677,194 @@ with nav_report:
         "Retrouver les exports de données, personnaliser les livrables et reprendre un brouillon ultérieurement."
     )
 
-    st.subheader("Personnalisation des livrables")
-    st.caption("Les champs sont facultatifs. Ils sont réutilisés dans le pré-diagnostic énergétique et, lorsque pertinent, dans le rapport photovoltaïque.")
+    st.subheader("Aperçu éditable des livrables")
+    st.caption(
+        "L'aperçu reprend les informations qui seront intégrées au PDF. "
+        "Les zones de saisie sont placées directement dans la partie du rapport qu'elles complètent."
+    )
 
     report_status = st.selectbox(
         "Statut du dossier",
         ["Brouillon", "À compléter après rendez-vous", "Finalisé"],
         key="report_status",
     )
-    note_col1, note_col2 = st.columns(2)
-    with note_col1:
-        st.text_area("Contexte / informations connues", key="note_context", height=120, placeholder="Activité, organisation, éléments connus avant le rendez-vous…")
-        st.text_area("Horaires / organisation de l'activité", key="note_activity_hours", height=110, placeholder="Ex. lundi-vendredi 7h-18h, fermeture le week-end…")
-        st.text_area("Équipements / usages identifiés", key="note_equipment", height=120, placeholder="Froid, chauffage, ventilation, process, éclairage, air comprimé…")
-        st.text_area("Commentaire sur les profils de consommation", key="note_profile", height=120)
-    with note_col2:
-        st.text_area("Commentaire sur les puissances / pointes", key="note_power", height=120)
-        st.text_area("Commentaire sur la tarification", key="note_tariff", height=110)
-        st.text_area("Points à approfondir en rendez-vous", key="note_investigate", height=120)
-        st.text_area("Préconisations / pistes d'action", key="note_recommendations", height=120)
 
-    st.text_area("Analyse / observations photovoltaïques", key="note_pv_observations", height=120, help="Champ destiné principalement au livrable photovoltaïque.")
-    st.text_area("Commentaires complémentaires", key="note_general", height=100)
+    preview_energy, preview_pv = st.tabs(
+        ["⚡ Pré-diagnostic énergétique", "☀️ Rapport photovoltaïque"]
+    )
+
+    with preview_energy:
+        st.caption("APERÇU DU LIVRABLE — les cadres correspondent aux principales parties du PDF.")
+
+        with st.container(border=True):
+            st.markdown("### 1. Synthèse énergétique")
+            st.caption(
+                f"{company_name or 'Entreprise non renseignée'} · "
+                f"Période du {analysis_start.strftime('%d/%m/%Y')} au {analysis_end.strftime('%d/%m/%Y')}"
+            )
+            pe1, pe2, pe3, pe4 = st.columns(4)
+            pe1.metric("Consommation", f"{format_fr(total_kwh, 0)} kWh")
+            pe2.metric("Moyenne / jour", f"{format_fr(average_daily_kwh, 1)} kWh")
+            pe3.metric("Pic observé", f"{format_fr(maximum_power_kw, 1)} kW")
+            pe4.metric("Coût estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HT")
+
+            st.markdown("#### Informations à intégrer sous la synthèse")
+            st.text_area(
+                "Contexte / informations connues",
+                key="note_context",
+                height=110,
+                placeholder="Activité, organisation, éléments connus avant le rendez-vous…",
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_area(
+                    "Horaires / organisation de l'activité",
+                    key="note_activity_hours",
+                    height=105,
+                    placeholder="Ex. lundi-vendredi 7h-18h, fermeture le week-end…",
+                )
+            with c2:
+                st.text_area(
+                    "Équipements / usages identifiés",
+                    key="note_equipment",
+                    height=105,
+                    placeholder="Froid, chauffage, ventilation, process, éclairage…",
+                )
+
+        with st.container(border=True):
+            st.markdown("### 2. Profil de consommation")
+            st.caption(
+                "Le PDF présente la consommation mensuelle et la matrice jour / heure "
+                "afin d'identifier les périodes d'activité, consommations résiduelles et pointes récurrentes."
+            )
+            profile_preview = weekday_hour_matrix.copy()
+            if not profile_preview.empty:
+                st.dataframe(
+                    profile_preview.style.format("{:.2f}"),
+                    use_container_width=True,
+                    height=245,
+                )
+            st.text_area(
+                "Commentaire du conseiller sur les profils",
+                key="note_profile",
+                height=120,
+                placeholder="Ex. consommation nocturne à investiguer, activité marquée le samedi…",
+            )
+            st.text_area(
+                "Commentaire sur les puissances / pointes",
+                key="note_power",
+                height=100,
+                placeholder="Ex. pointe récurrente au démarrage de l'activité…",
+            )
+
+        with st.container(border=True):
+            st.markdown("### 3. Tarification et périodes")
+            tariff_preview = tariff_summary_df[
+                [
+                    "Categorie_tarifaire",
+                    "Consommation_kWh",
+                    "Part_pourcent",
+                    "Prix_unitaire_EUR_kWh_HT",
+                    "Montant_EUR_HT",
+                ]
+            ].copy()
+            tariff_preview.columns = [
+                "Plage",
+                "Consommation (kWh)",
+                "Part (%)",
+                "Prix unitaire (€ HT/kWh)",
+                "Montant (€ HT)",
+            ]
+            st.dataframe(
+                tariff_preview.style.format(
+                    {
+                        "Consommation (kWh)": "{:.0f}",
+                        "Part (%)": "{:.1f}",
+                        "Prix unitaire (€ HT/kWh)": "{:.4f}",
+                        "Montant (€ HT)": "{:.2f}",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            tc1, tc2, tc3 = st.columns(3)
+            tc1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 0)} € HT")
+            tc2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 0)} € HT")
+            tc3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HT")
+            st.text_area(
+                "Commentaire du conseiller sur la tarification",
+                key="note_tariff",
+                height=110,
+            )
+
+        with st.container(border=True):
+            st.markdown("### 4. Préparation et suites du rendez-vous")
+            st.text_area(
+                "Points à approfondir en rendez-vous",
+                key="note_investigate",
+                height=120,
+                placeholder="Questions à poser, usages à vérifier, incohérences à expliquer…",
+            )
+            st.text_area(
+                "Préconisations / pistes d'action",
+                key="note_recommendations",
+                height=120,
+                placeholder="Actions envisagées après analyse et échange avec l'entreprise…",
+            )
+            st.text_area(
+                "Commentaires complémentaires",
+                key="note_general",
+                height=100,
+            )
+
+    with preview_pv:
+        st.caption(
+            "APERÇU DU LIVRABLE PHOTOVOLTAÏQUE — les informations calculées sont affichées "
+            "avec la zone d'analyse du conseiller à l'endroit où elle sera reprise dans le PDF."
+        )
+
+        with st.container(border=True):
+            st.markdown("### Synthèse de l'opportunité photovoltaïque")
+            pp1, pp2, pp3, pp4 = st.columns(4)
+            pp1.metric("Puissance étudiée", f"{format_fr(pv_peak_kwp, 1)} kWc")
+            pp2.metric("Production estimée", f"{format_fr(pvgis_production_kwh, 0)} kWh")
+            pp3.metric("Autoconsommation", f"{format_fr(self_consumption_rate, 1)} %")
+            pp4.metric("Autoproduction", f"{format_fr(self_sufficiency_rate, 1)} %")
+            st.caption(
+                f"Indice photovoltaïque CMA : {cma_score_data.get('score', 0):.0f}/100 "
+                f"— {cma_score_data.get('label', '')}"
+            )
+            st.text_area(
+                "Analyse / observations photovoltaïques",
+                key="note_pv_observations",
+                height=140,
+                placeholder="Interprétation du dimensionnement, contraintes, éléments à confirmer…",
+            )
+
+        with st.container(border=True):
+            st.markdown("### Annotations reprises dans le rapport photovoltaïque")
+            st.caption(
+                "Le rapport photovoltaïque reprend aussi les informations communes saisies dans "
+                "le pré-diagnostic énergétique : contexte, horaires, équipements, profils, puissance, "
+                "tarification, préconisations et commentaires complémentaires."
+            )
+            pv_shared_notes = {
+                "Contexte": st.session_state.get("note_context", ""),
+                "Horaires / organisation": st.session_state.get("note_activity_hours", ""),
+                "Équipements / usages": st.session_state.get("note_equipment", ""),
+                "Profils de consommation": st.session_state.get("note_profile", ""),
+                "Puissance / pointes": st.session_state.get("note_power", ""),
+                "Tarification": st.session_state.get("note_tariff", ""),
+                "Préconisations": st.session_state.get("note_recommendations", ""),
+                "Commentaires complémentaires": st.session_state.get("note_general", ""),
+            }
+            filled_shared = {k: v for k, v in pv_shared_notes.items() if str(v).strip()}
+            if filled_shared:
+                for title, value in filled_shared.items():
+                    st.markdown(f"**{title}**")
+                    st.write(value)
+            else:
+                st.info("Aucune annotation commune n'est encore renseignée.")
 
     report_notes = {
         "status": report_status,
