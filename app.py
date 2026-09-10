@@ -1,5 +1,7 @@
 import base64
 import json
+from dossier_schema import SETTINGS, PV_KEYS
+from dossier_ui import initialize_dossier, render_dossier_loader, source_uploader, render_dossier_download
 from io import BytesIO
 from pathlib import Path
 
@@ -31,6 +33,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from pvlib.location import Location
 
 
@@ -39,7 +42,7 @@ from pvlib.location import Location
 # ============================================================
 
 st.set_page_config(
-    page_title="CMA - Pré-diagnostic photovoltaïque",
+    page_title="CMA - Analyse énergétique",
     page_icon="☀️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -4051,6 +4054,14 @@ def build_automatic_commentary(
     }
 
 
+def render_pdf_preview(pdf_bytes):
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    components.html(
+        f'<iframe title="Aperçu du rapport PDF" src="data:application/pdf;base64,{encoded}" '
+        'width="100%" height="850" style="border:0"></iframe>', height=870)
+    st.caption("Si votre navigateur bloque l’aperçu intégré, téléchargez le PDF pour vérifier sa mise en page.")
+
+
 def create_cma_pdf_report(
     company_name: str,
     company_siret: str,
@@ -4101,6 +4112,7 @@ def create_cma_pdf_report(
     logo_path: Path | None,
     report_notes: dict | None = None,
 ) -> bytes:
+    report_notes = report_notes or {}
     output = BytesIO()
 
     page_width, page_height = A4
@@ -4234,6 +4246,15 @@ def create_cma_pdf_report(
         )
     )
 
+    def append_notes(fields, section=None):
+        filled = [(title, report_notes.get(key, "")) for key, title in fields
+                  if str(report_notes.get(key, "")).strip()]
+        if filled and section:
+            story.append(Paragraph(section, styles["CMA_H1"]))
+        for title, value in filled:
+            story.append(Paragraph(title, styles["CMA_H2"]))
+            story.append(Paragraph(safe_pdf_text(value).replace("\n", "<br/>"), styles["CMA_Body"]))
+
     story = []
 
     # Couverture
@@ -4261,6 +4282,8 @@ def create_cma_pdf_report(
         ["Date du diagnostic", diagnostic_date.strftime("%d/%m/%Y")],
         ["Période analysée", f"{period_start:%d/%m/%Y} au {period_end:%d/%m/%Y}"],
     ]
+    cover_data.append(["Statut", safe_pdf_text(report_notes.get("status", "Brouillon"))])
+    cover_data = [[Paragraph(str(cell), styles["CMA_Body"]) for cell in row] for row in cover_data]
     cover_table = Table(cover_data, colWidths=[4.6 * cm, 11.2 * cm])
     cover_table.setStyle(
         TableStyle(
@@ -4436,8 +4459,12 @@ def create_cma_pdf_report(
         color_discrete_sequence=["#17365D"],
     )
     fig_monthly_pdf.update_layout(template="plotly_white", showlegend=False)
+    fig_monthly_pdf.update_traces(x=monthly_df["Mois_date"].dt.strftime("%m/%Y"))
+    fig_monthly_pdf.update_xaxes(type="category")
     month_img = Image(figure_to_png_bytes(fig_monthly_pdf), width=16.5 * cm, height=7.4 * cm)
     story.append(month_img)
+    append_notes([('context', 'Contexte et informations connues'), ('activity_hours', 'Horaires et organisation de l’activité'), ('equipment', 'Équipements et usages identifiés')])
+
     story.append(PageBreak())
 
     # Profil hebdomadaire
@@ -4468,7 +4495,10 @@ def create_cma_pdf_report(
         ("BACKGROUND", (0, 0), (-1, 0), cma_blue),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6.8),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.2),
+        ("LEADING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ("ALIGN", (1, 1), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.3, colors.white),
@@ -4517,7 +4547,9 @@ def create_cma_pdf_report(
         labels={"Heure": "Heure", "Puissance_kW": "Puissance moyenne (kW)"},
     )
     fig_profiles_pdf.update_layout(template="plotly_white", hovermode="x unified")
-    story.append(Image(figure_to_png_bytes(fig_profiles_pdf), width=16.5 * cm, height=7.6 * cm))
+    story.append(Image(figure_to_png_bytes(fig_profiles_pdf), width=16.5 * cm, height=7.0 * cm))
+    append_notes([('profile', 'Commentaire sur les profils'), ('power', 'Puissance et pointes')])
+
     story.append(PageBreak())
 
     # Solaire
@@ -4591,6 +4623,8 @@ def create_cma_pdf_report(
             legend=dict(orientation="h"),
         )
         story.append(Image(figure_to_png_bytes(fig_compare_pdf), width=16.5 * cm, height=7.6 * cm))
+
+    append_notes([('pv_observations', 'Analyse photovoltaïque du conseiller')])
 
     story.append(PageBreak())
 
@@ -4670,6 +4704,8 @@ def create_cma_pdf_report(
             styles["CMA_Small"],
         )
     )
+
+    append_notes([('tariff', 'Commentaire sur la tarification')])
 
     story.append(PageBreak())
 
@@ -4970,25 +5006,9 @@ def create_cma_pdf_report(
     ]
     story.append(Table(recommendation_rows, colWidths=[15.8 * cm]))
 
-    report_notes = report_notes or {}
-    note_items = [
-        ("Contexte et informations connues", report_notes.get("context", "")),
-        ("Horaires / organisation de l'activité", report_notes.get("activity_hours", "")),
-        ("Équipements et usages identifiés", report_notes.get("equipment", "")),
-        ("Commentaire sur les profils de consommation", report_notes.get("profile", "")),
-        ("Commentaire sur la puissance", report_notes.get("power", "")),
-        ("Commentaire sur la tarification", report_notes.get("tariff", "")),
-        ("Analyse / observations photovoltaïques", report_notes.get("pv_observations", "")),
-        ("Préconisations et suites à donner", report_notes.get("recommendations", "")),
-        ("Commentaires complémentaires", report_notes.get("general", "")),
-    ]
-    filled_notes = [(title, value) for title, value in note_items if str(value).strip()]
-    if filled_notes:
-        story.append(Paragraph("10. Annotations du conseiller", styles["CMA_H1"]))
-        for note_title, note_value in filled_notes:
-            story.append(Paragraph(note_title, styles["CMA_H2"]))
-            story.append(Paragraph(safe_pdf_text(note_value).replace("\n", "<br/>"), styles["CMA_Body"]))
-        story.append(PageBreak())
+    append_notes([("investigate", "Points à approfondir"),
+                  ("recommendations", "Préconisations et suites à donner"),
+                  ("general", "Commentaires complémentaires")], section="10. Préparation et suites du rendez-vous")
 
     story.append(Paragraph("11. Limites du pré-diagnostic", styles["CMA_H1"]))
     story.append(
@@ -5094,17 +5114,20 @@ def create_energy_prediagnostic_pdf(
         ["Période analysée", f"{period_start:%d/%m/%Y} au {period_end:%d/%m/%Y}"],
         ["Statut", safe_pdf_text(report_notes.get("status", "Brouillon"))],
     ]
+    cover = [[Paragraph(str(cell), styles["EN_Body"]) for cell in row] for row in cover]
     t=Table(cover,colWidths=[4.6*cm,11.2*cm]); t.setStyle(TableStyle([("BACKGROUND",(0,0),(0,-1),light_blue),("TEXTCOLOR",(0,0),(0,-1),cma_blue),("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("GRID",(0,0),(-1,-1),.4,colors.HexColor("#D8E0E8")),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),8)])); story.append(t); story.append(Spacer(1,.7*cm))
     story.append(Paragraph("<b>Important :</b> ce document est une analyse préalable fondée sur la courbe de charge disponible. Il ne constitue pas un audit énergétique réglementaire et doit être complété par la connaissance des équipements, des usages et du fonctionnement de l'entreprise.", styles["EN_Body"])); story.append(PageBreak())
 
     story.append(Paragraph("1. Synthèse énergétique", styles["EN_H1"]))
-    kpis=[[Paragraph(f"{format_fr(total_kwh,0)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(average_daily_kwh,1)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(maximum_power_kw,1)} kW",styles["EN_KPI"])],[Paragraph("Consommation totale",styles["EN_Label"]),Paragraph("Moyenne journalière",styles["EN_Label"]),Paragraph("Pic de puissance moyen sur intervalle",styles["EN_Label"])],[Paragraph(f"{format_fr(tariff_variable_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_fixed_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_total_cost_eur,0)} € HT",styles["EN_KPI"])],[Paragraph("Part variable estimée",styles["EN_Label"]),Paragraph("Part fixe",styles["EN_Label"]),Paragraph("Total estimé",styles["EN_Label"])]]
+    kpis=[[Paragraph(f"{format_fr(total_kwh,0)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(average_daily_kwh,1)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(maximum_power_kw,1)} kW",styles["EN_KPI"])],[Paragraph("Consommation totale",styles["EN_Label"]),Paragraph("Moyenne journalière",styles["EN_Label"]),Paragraph("Pic de puissance moyen sur intervalle",styles["EN_Label"])],[Paragraph(f"{format_fr(tariff_variable_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_fixed_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_total_cost_eur,0)} € HT",styles["EN_KPI"])],[Paragraph("Part variable estimée",styles["EN_Label"]),Paragraph("Part fixe proratisée",styles["EN_Label"]),Paragraph("Total estimé",styles["EN_Label"])]]
     kt=Table(kpis,colWidths=[5.25*cm]*3); kt.setStyle(TableStyle([("BOX",(0,0),(-1,-1),.7,colors.HexColor("#DDE4EB")),("INNERGRID",(0,0),(-1,-1),.4,colors.HexColor("#E6EBF0")),("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8)])); story.append(kt); story.append(Spacer(1,.4*cm))
     if report_notes.get("context"): story.append(Paragraph("Contexte connu avant / pendant l'entretien",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["context"]).replace("\n","<br/>"),styles["EN_Body"]))
     if report_notes.get("activity_hours"): story.append(Paragraph("Horaires et organisation de l'activité",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["activity_hours"]).replace("\n","<br/>"),styles["EN_Body"]))
     if report_notes.get("equipment"): story.append(Paragraph("Équipements / usages identifiés",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["equipment"]).replace("\n","<br/>"),styles["EN_Body"]))
 
     figm=px.bar(monthly_df,x="Mois_date",y="Consommation_kWh",title="Consommation mensuelle",labels={"Mois_date":"Mois","Consommation_kWh":"Consommation (kWh)"},color_discrete_sequence=["#17365D"]); figm.update_layout(template="plotly_white",showlegend=False)
+    figm.update_traces(x=monthly_df["Mois_date"].dt.strftime("%m/%Y"))
+    figm.update_xaxes(type="category")
     story.append(Image(figure_to_png_bytes(figm),width=16.5*cm,height=7.4*cm)); story.append(PageBreak())
 
     story.append(Paragraph("2. Profil de consommation",styles["EN_H1"]))
@@ -5114,6 +5137,7 @@ def create_energy_prediagnostic_pdf(
     for hour,row in matrix.iterrows(): rows.append([f"{int(hour):02d}h"]+["" if pd.isna(v) else f"{v:.1f}" for v in row.values])
     mt=Table(rows,colWidths=[1.7*cm]+[2.0*cm]*len(matrix.columns),repeatRows=1); mt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),cma_blue),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),6.8),("GRID",(0,0),(-1,-1),.25,colors.HexColor("#D8E0E8")),("ALIGN",(1,1),(-1,-1),"CENTER"),("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)])); story.append(mt)
     if report_notes.get("profile"): story.append(Paragraph("Commentaire du conseiller",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["profile"]).replace("\n","<br/>"),styles["EN_Body"]))
+    if report_notes.get("power"): story.append(Paragraph("Puissance / pointes",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["power"]).replace("\n","<br/>"),styles["EN_Body"]))
     story.append(PageBreak())
 
     story.append(Paragraph("3. Tarification et périodes",styles["EN_H1"]))
@@ -5122,7 +5146,6 @@ def create_energy_prediagnostic_pdf(
     tt=Table(rows,colWidths=[3.3*cm,3.3*cm,2.4*cm,3.3*cm,3.3*cm],repeatRows=1); tt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),cma_blue),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),7.5),("GRID",(0,0),(-1,-1),.4,colors.HexColor("#D8E0E8")),("ALIGN",(1,1),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)])); story.append(tt); story.append(Spacer(1,.35*cm))
     story.append(Paragraph(f"Indice de potentiel d'optimisation tarifaire CMA : <b>{tariff_score_data.get('score',0):.0f}/100 — {safe_pdf_text(tariff_score_data.get('label',''))}</b>. Cet indice constitue un repère de lecture et ne conclut pas à lui seul à la pertinence d'un changement de contrat.",styles["EN_Body"]))
     if report_notes.get("tariff"): story.append(Paragraph("Commentaire du conseiller",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["tariff"]).replace("\n","<br/>"),styles["EN_Body"]))
-    if report_notes.get("power"): story.append(Paragraph("Puissance / pointes",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["power"]).replace("\n","<br/>"),styles["EN_Body"]))
 
     story.append(PageBreak()); story.append(Paragraph("4. Préparation et suites du rendez-vous",styles["EN_H1"]))
     fields=[("Points à approfondir",report_notes.get("investigate","")),("Préconisations / pistes d'action",report_notes.get("recommendations","")),("Commentaires complémentaires",report_notes.get("general",""))]
@@ -5154,6 +5177,7 @@ def make_excel_export(
     financial_summary: pd.DataFrame,
     financial_projection_data: pd.DataFrame,
     summary: pd.DataFrame,
+    include_photovoltaic: bool = True,
 ) -> bytes:
     output = BytesIO()
 
@@ -5199,16 +5223,9 @@ def make_excel_export(
             index=False,
             sheet_name="Détail tarifaire",
         )
-        financial_summary.to_excel(
-            writer,
-            index=False,
-            sheet_name="Synthèse financière",
-        )
-        financial_projection_data.to_excel(
-            writer,
-            index=False,
-            sheet_name="Projection financière",
-        )
+        if include_photovoltaic:
+            financial_summary.to_excel(writer, index=False, sheet_name="Synthèse financière")
+            financial_projection_data.to_excel(writer, index=False, sheet_name="Projection financière")
 
         workbook = writer.book
 
@@ -5446,6 +5463,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
 # ACCUEIL
 # ============================================================
 
+initialize_dossier()
 render_header()
 
 st.markdown(
@@ -5471,57 +5489,16 @@ st.markdown(
 with st.sidebar:
     st.markdown("## 1. Import")
 
-    uploaded_file = st.file_uploader(
-        "Courbe de charge Enedis ou GEREDIS",
-        type=["csv", "xlsx", "xls", "txt"],
-        help=(
-            "Enedis : CSV/Excel avec les colonnes Horodate et Valeur. "
-            "GEREDIS : fichier .txt avec 6 valeurs de puissance par heure "
-            "(pas de 10 minutes)."
-        ),
-        key="load_curve_file",
-    )
-
-    pma_uploaded_file = st.file_uploader(
-        "Puissances maximales Enedis (PMA)",
-        type=["csv", "xlsx", "xls"],
-        help=(
-            "Fichier indépendant contenant PMA et, en triphasé, "
-            "PMA1, PMA2 et PMA3."
-        ),
-        key="pma_uploaded_file",
-    )
-
-    st.markdown("---")
-    st.markdown("### Reprendre un brouillon")
-    draft_uploaded_file = st.file_uploader(
-        "Brouillon de pré-diagnostic (.json)",
-        type=["json"],
-        key="draft_uploaded_file",
-        help="Recharge les informations entreprise, le statut et toutes les annotations des livrables.",
-    )
-    if draft_uploaded_file is not None and st.button(
-        "↥ Charger le brouillon",
-        use_container_width=True,
-        key="load_draft_button",
-    ):
-        try:
-            draft_payload = json.loads(draft_uploaded_file.getvalue().decode("utf-8-sig"))
-            draft_values = draft_payload.get("fields", {})
-            date_value = draft_values.get("diagnostic_date")
-            if isinstance(date_value, str):
-                parsed_date = pd.to_datetime(date_value, errors="coerce")
-                if not pd.isna(parsed_date):
-                    draft_values["diagnostic_date"] = parsed_date.date()
-            for draft_key, draft_value in draft_values.items():
-                st.session_state[draft_key] = draft_value
-            st.session_state["draft_loaded_message"] = True
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Impossible de charger le brouillon : {exc}")
-
-    if st.session_state.pop("draft_loaded_message", False):
-        st.success("Brouillon rechargé. Les annotations et informations enregistrées ont été restaurées.")
+    render_dossier_loader()
+    analysis_mode = st.radio("Parcours", ["Analyse énergétique", "Opportunité photovoltaïque"], key="analysis_mode")
+    pv_enabled = analysis_mode == "Opportunité photovoltaïque"
+    uploaded_file = source_uploader(
+        "curve", "Courbe de charge Enedis ou GEREDIS", ["csv", "xlsx", "xls", "txt"],
+        "Enedis : CSV/Excel avec Horodate et Valeur. GEREDIS : .txt avec six valeurs de 10 minutes par ligne.")
+    pma_uploaded_file = source_uploader(
+        "pma", "Puissances maximales Enedis (PMA)", ["csv", "xlsx", "xls"],
+        "Fichier indépendant contenant PMA et, en triphasé, PMA1, PMA2 et PMA3.")
+    st.caption("Le parcours énergie fonctionne sans adresse géocodée ni connexion à PVGIS.")
 
 if uploaded_file is None:
     if pma_uploaded_file is not None:
@@ -5531,6 +5508,7 @@ if uploaded_file is None:
             "analyser les puissances maximales."
         )
         render_pma_analysis(pma_uploaded_file)
+        render_dossier_download()
         st.stop()
 
     st.markdown(
@@ -5568,6 +5546,7 @@ if uploaded_file is None:
         "Importez une courbe de charge Enedis/GEREDIS ou un fichier de puissances maximales "
         "depuis le panneau latéral."
     )
+    render_dossier_download()
     st.stop()
 
 
@@ -5592,6 +5571,14 @@ available_years = sorted(
     enriched_df["Horodate"].dt.year.unique().tolist()
 )
 
+# Values for hidden photovoltaic controls are retained when switching paths.
+for setting_key in PV_KEYS:
+    globals()[setting_key] = st.session_state.get(setting_key, SETTINGS[setting_key].get("default"))
+selected_location = None
+pv_aspect = 0
+if st.session_state.get("selected_year") not in available_years:
+    st.session_state.pop("selected_year", None)
+
 with st.sidebar:
     st.markdown("---")
     st.markdown("## 2. Période")
@@ -5603,6 +5590,7 @@ with st.sidebar:
             "Année",
             "Période personnalisée",
         ],
+        key="period_mode",
     )
 
     selected_year = None
@@ -5614,16 +5602,19 @@ with st.sidebar:
             "Année",
             available_years,
             index=len(available_years) - 1,
+            key="selected_year",
         )
 
     elif period_mode == "Période personnalisée":
         start_date = st.date_input(
             "Date de début",
             value=start_date,
+            key="start_date",
         )
         end_date = st.date_input(
             "Date de fin",
             value=end_date,
+            key="end_date",
         )
 
     st.markdown("---")
@@ -5655,7 +5646,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("## 4. Localisation solaire")
+    st.markdown("## 4. Adresse de l’entreprise")
 
     company_address = st.text_input(
         "Adresse complète de l'entreprise",
@@ -5663,137 +5654,148 @@ with st.sidebar:
         key="company_address",
     )
 
-    if st.button(
-        "📍 Rechercher l'adresse",
-        use_container_width=True,
-    ):
-        try:
-            st.session_state["address_candidates"] = (
-                geocode_company_address(company_address)
+    if pv_enabled:
+        if st.button(
+            "📍 Rechercher l'adresse",
+            use_container_width=True,
+        ):
+            try:
+                st.session_state["address_candidates"] = (
+                    geocode_company_address(company_address)
+                )
+            except Exception as exc:
+                st.session_state["address_candidates"] = []
+                st.error(f"Géocodage impossible : {exc}")
+
+        address_candidates = st.session_state.get(
+            "address_candidates",
+            [],
+        )
+
+        selected_location = None
+
+        if address_candidates:
+            labels = [item["label"] for item in address_candidates]
+
+            if st.session_state.get("selected_label") not in labels:
+                st.session_state.pop("selected_label", None)
+            selected_label = st.selectbox(
+                "Adresse reconnue",
+                labels,
+                key="selected_label",
             )
-        except Exception as exc:
-            st.session_state["address_candidates"] = []
-            st.error(f"Géocodage impossible : {exc}")
 
-    address_candidates = st.session_state.get(
-        "address_candidates",
-        [],
-    )
+            selected_location = next(
+                item
+                for item in address_candidates
+                if item["label"] == selected_label
+            )
 
-    selected_location = None
+            st.success(
+                f"Adresse validée : {selected_location['label']}\n\n"
+                f"Latitude : {selected_location['latitude']:.6f}\n\n"
+                f"Longitude : {selected_location['longitude']:.6f}"
+            )
 
-    if address_candidates:
-        labels = [item["label"] for item in address_candidates]
+        with st.expander("Coordonnées manuelles en cas de besoin"):
+            manual_coordinates = st.checkbox(
+                "Utiliser des coordonnées manuelles",
+                key="manual_coordinates",
+            )
 
-        selected_label = st.selectbox(
-            "Adresse reconnue",
-            labels,
+            manual_latitude = st.number_input(
+                "Latitude",
+                min_value=-90.0,
+                max_value=90.0,
+                value=44.8378,
+                format="%.6f",
+                disabled=not manual_coordinates,
+                key="manual_latitude",
+            )
+
+            manual_longitude = st.number_input(
+                "Longitude",
+                min_value=-180.0,
+                max_value=180.0,
+                value=-0.5792,
+                format="%.6f",
+                disabled=not manual_coordinates,
+                key="manual_longitude",
+            )
+
+            if manual_coordinates:
+                selected_location = {
+                    "label": (
+                        company_address.strip()
+                        or "Coordonnées saisies manuellement"
+                    ),
+                    "latitude": float(manual_latitude),
+                    "longitude": float(manual_longitude),
+                    "score": None,
+                    "postcode": "",
+                    "city": "",
+                    "street": "",
+                    "housenumber": "",
+                    "source": "Saisie manuelle",
+                }
+
+        st.markdown("## 5. Paramètres photovoltaïques")
+
+        pv_peak_kwp = st.number_input(
+            "Puissance étudiée (kWc)",
+            min_value=0.1,
+            max_value=1000.0,
+            value=10.0,
+            step=0.5,
+            key="pv_peak_kwp",
         )
 
-        selected_location = next(
-            item
-            for item in address_candidates
-            if item["label"] == selected_label
+        pv_tilt = st.slider(
+            "Inclinaison des panneaux",
+            min_value=0,
+            max_value=90,
+            value=30,
+            format="%d°",
+            key="pv_tilt",
         )
 
-        st.success(
-            f"Adresse validée : {selected_location['label']}\n\n"
-            f"Latitude : {selected_location['latitude']:.6f}\n\n"
-            f"Longitude : {selected_location['longitude']:.6f}"
+        orientation_label = st.selectbox(
+            "Orientation",
+            [
+                "Sud",
+                "Sud-Est",
+                "Est",
+                "Sud-Ouest",
+                "Ouest",
+            ],
+            key="orientation_label",
         )
 
-    with st.expander("Coordonnées manuelles en cas de besoin"):
-        manual_coordinates = st.checkbox(
-            "Utiliser des coordonnées manuelles"
+        orientation_to_pvgis = {
+            "Sud": 0,
+            "Sud-Est": -45,
+            "Est": -90,
+            "Sud-Ouest": 45,
+            "Ouest": 90,
+        }
+
+        pv_aspect = orientation_to_pvgis[orientation_label]
+
+        pv_losses = st.slider(
+            "Pertes système",
+            min_value=0,
+            max_value=35,
+            value=14,
+            format="%d%%",
+            key="pv_losses",
         )
 
-        manual_latitude = st.number_input(
-            "Latitude",
-            min_value=-90.0,
-            max_value=90.0,
-            value=44.8378,
-            format="%.6f",
-            disabled=not manual_coordinates,
+        st.caption(
+            "Le lever et le coucher sont calculés pour chaque date à partir "
+            "des coordonnées exactes. PVGIS estime automatiquement "
+            "l'irradiation et la production pour la localisation et les "
+            "caractéristiques de l'installation."
         )
-
-        manual_longitude = st.number_input(
-            "Longitude",
-            min_value=-180.0,
-            max_value=180.0,
-            value=-0.5792,
-            format="%.6f",
-            disabled=not manual_coordinates,
-        )
-
-        if manual_coordinates:
-            selected_location = {
-                "label": (
-                    company_address.strip()
-                    or "Coordonnées saisies manuellement"
-                ),
-                "latitude": float(manual_latitude),
-                "longitude": float(manual_longitude),
-                "score": None,
-                "postcode": "",
-                "city": "",
-                "street": "",
-                "housenumber": "",
-                "source": "Saisie manuelle",
-            }
-
-    st.markdown("## 5. Paramètres photovoltaïques")
-
-    pv_peak_kwp = st.number_input(
-        "Puissance étudiée (kWc)",
-        min_value=0.1,
-        max_value=1000.0,
-        value=10.0,
-        step=0.5,
-    )
-
-    pv_tilt = st.slider(
-        "Inclinaison des panneaux",
-        min_value=0,
-        max_value=90,
-        value=30,
-        format="%d°",
-    )
-
-    orientation_label = st.selectbox(
-        "Orientation",
-        [
-            "Sud",
-            "Sud-Est",
-            "Est",
-            "Sud-Ouest",
-            "Ouest",
-        ],
-    )
-
-    orientation_to_pvgis = {
-        "Sud": 0,
-        "Sud-Est": -45,
-        "Est": -90,
-        "Sud-Ouest": 45,
-        "Ouest": 90,
-    }
-
-    pv_aspect = orientation_to_pvgis[orientation_label]
-
-    pv_losses = st.slider(
-        "Pertes système",
-        min_value=0,
-        max_value=35,
-        value=14,
-        format="%d%%",
-    )
-
-    st.caption(
-        "Le lever et le coucher sont calculés pour chaque date à partir "
-        "des coordonnées exactes. PVGIS estime automatiquement "
-        "l'irradiation et la production pour la localisation et les "
-        "caractéristiques de l'installation."
-    )
 
     st.markdown("---")
     st.markdown("## 6. Paramètres tarifaires")
@@ -5807,6 +5809,7 @@ with st.sidebar:
             "Toutes les autres heures seront automatiquement classées "
             "en heures pleines."
         ),
+        key="hc_range_count",
     )
 
     hc1_col1, hc1_col2 = st.columns(2)
@@ -5816,6 +5819,7 @@ with st.sidebar:
             "Début HC 1",
             value=pd.Timestamp("22:00").time(),
             step=1800,
+            key="hc1_start",
         )
 
     with hc1_col2:
@@ -5823,6 +5827,7 @@ with st.sidebar:
             "Fin HC 1",
             value=pd.Timestamp("06:00").time(),
             step=1800,
+            key="hc1_end",
         )
 
     hc_ranges = [(hc1_start, hc1_end)]
@@ -5835,6 +5840,7 @@ with st.sidebar:
                 "Début HC 2",
                 value=pd.Timestamp("12:30").time(),
                 step=1800,
+                key="hc2_start",
             )
 
         with hc2_col2:
@@ -5842,6 +5848,7 @@ with st.sidebar:
                 "Fin HC 2",
                 value=pd.Timestamp("14:30").time(),
                 step=1800,
+                key="hc2_end",
             )
 
         hc_ranges.append((hc2_start, hc2_end))
@@ -5866,6 +5873,7 @@ with st.sidebar:
             "Saisissez les prix présents sur une facture ou un contrat récent. "
             "Les tarifs ne sont pas maintenus automatiquement par l'application."
         ),
+        key="electricity_tariff_type",
     )
 
     unique_electricity_price = 0.18
@@ -5884,6 +5892,7 @@ with st.sidebar:
             value=0.1842,
             step=0.0010,
             format="%.4f",
+            key="unique_electricity_price",
         )
 
     elif electricity_tariff_type == "HP / HC":
@@ -5897,6 +5906,7 @@ with st.sidebar:
                 value=0.20,
                 step=0.0010,
                 format="%.4f",
+                key="hp_electricity_price",
             )
 
         with hc_col:
@@ -5907,6 +5917,7 @@ with st.sidebar:
                 value=0.15,
                 step=0.0010,
                 format="%.4f",
+                key="hc_electricity_price",
             )
 
     else:
@@ -5917,6 +5928,7 @@ with st.sidebar:
             value=0.21,
             step=0.0010,
             format="%.4f",
+            key="hp_winter_electricity_price",
         )
         hc_winter_electricity_price = st.number_input(
             "Prix HC hiver (€/kWh HT)",
@@ -5925,6 +5937,7 @@ with st.sidebar:
             value=0.16,
             step=0.0010,
             format="%.4f",
+            key="hc_winter_electricity_price",
         )
         hp_summer_electricity_price = st.number_input(
             "Prix HP été (€/kWh HT)",
@@ -5933,6 +5946,7 @@ with st.sidebar:
             value=0.18,
             step=0.0010,
             format="%.4f",
+            key="hp_summer_electricity_price",
         )
         hc_summer_electricity_price = st.number_input(
             "Prix HC été (€/kWh HT)",
@@ -5941,6 +5955,7 @@ with st.sidebar:
             value=0.14,
             step=0.0010,
             format="%.4f",
+            key="hc_summer_electricity_price",
         )
 
     annual_subscription_eur = st.number_input(
@@ -5949,250 +5964,279 @@ with st.sidebar:
         max_value=100000.0,
         value=300.0,
         step=10.0,
+        key="annual_subscription_eur",
     )
 
-    surplus_sale_price_eur_kwh = st.number_input(
-        "Prix de vente du surplus (€/kWh HT)",
-        min_value=0.0,
-        max_value=5.0,
-        value=0.0761,
-        step=0.0010,
-        format="%.4f",
-    )
-
-    st.caption(
-        "Les paramètres détaillés d'investissement, de raccordement et de "
-        "projection sont regroupés dans le bouton ci-dessous."
-    )
-
-    with st.popover(
-        "⚙️ Paramètres financiers avancés",
-        use_container_width=True,
-    ):
-        st.markdown("### Investissement")
-
-        fixing_type = st.selectbox(
-            "Système de fixation",
-            list(PV_FIXING_COSTS_EUR_WC.keys()),
-        )
-
-        erp_icpe_surcharge = st.checkbox(
-            "Projet ERP ou ICPE : ajouter 0,10 €/Wc",
-            value=False,
-        )
-
-        structural_study_cost = st.number_input(
-            "Étude structure charpente/toiture (€ HT)",
+    if pv_enabled:
+        surplus_sale_price_eur_kwh = st.number_input(
+            "Prix de vente du surplus (€/kWh HT)",
             min_value=0.0,
-            max_value=100000.0,
-            value=2000.0,
-            step=250.0,
-        )
-
-        roof_renovation_enabled = st.checkbox(
-            "Intégrer une rénovation de couverture",
-            value=False,
-        )
-
-        roof_type = st.selectbox(
-            "Type de couverture à rénover",
-            list(ROOF_RENOVATION_COSTS_EUR_M2.keys()),
-            disabled=not roof_renovation_enabled,
-        )
-
-        roof_area_m2 = st.number_input(
-            "Surface de couverture concernée (m²)",
-            min_value=0.0,
-            max_value=100000.0,
-            value=0.0,
-            step=10.0,
-            disabled=not roof_renovation_enabled,
-        )
-
-        asbestos_removal_enabled = st.checkbox(
-            "Prévoir un désamiantage à 60 €/m²",
-            value=False,
-            disabled=not roof_renovation_enabled,
-        )
-
-        st.markdown("### Raccordement")
-
-        connection_mode = st.selectbox(
-            "Scénario indicatif de raccordement",
-            [
-                "Aucun / inférieur ou égal à 36 kWc",
-                "Branchement BT avec extension",
-                "Branchement complet C4",
-                "Création poste BT-HTA",
-            ],
-        )
-
-        public_extension_length_m = st.number_input(
-            "Longueur d'extension publique (m)",
-            min_value=0.0,
-            max_value=10000.0,
-            value=0.0,
-            step=5.0,
-            disabled=(
-                connection_mode
-                not in [
-                    "Branchement BT avec extension",
-                    "Création poste BT-HTA",
-                ]
-            ),
-        )
-
-        apply_enedis_reduction = st.checkbox(
-            "Appliquer une réfaction Enedis indicative de 60 %",
-            value=True,
-            disabled=pv_peak_kwp <= 36,
-            help=(
-                "Hypothèse indicative issue du document transmis. "
-                "Elle doit être confirmée par une proposition de raccordement."
-            ),
-        )
-
-        private_trench_length_m = st.number_input(
-            "Tranchée interne privée (m)",
-            min_value=0.0,
-            max_value=10000.0,
-            value=0.0,
-            step=5.0,
-        )
-
-        include_private_hta_post = st.checkbox(
-            "Création d'un poste privé HTA/BT",
-            value=False,
-        )
-
-        include_decoupling_cell = st.checkbox(
-            "Ajouter une cellule de découplage",
-            value=False,
-        )
-
-        other_investment_costs = st.number_input(
-            "Autres coûts d'investissement (€ HT)",
-            min_value=0.0,
-            max_value=10000000.0,
-            value=0.0,
-            step=500.0,
-        )
-
-        grant_amount = st.number_input(
-            "Aides ou subventions déduites (€)",
-            min_value=0.0,
-            max_value=10000000.0,
-            value=0.0,
-            step=500.0,
-        )
-
-        st.markdown("### Charges annuelles")
-
-        insurance_rate_percent = st.slider(
-            "Assurance multirisque et perte d'exploitation",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.5,
-            step=0.1,
-            format="%.1f %% de l'investissement",
-        )
-
-        maintenance_eur_kwp = st.slider(
-            "Suivi et maintenance",
-            min_value=0.0,
-            max_value=30.0,
-            value=10.5,
-            step=0.5,
-            format="%.1f €/kWc/an",
-        )
-
-        inverter_provision_eur_kwp = st.slider(
-            "Provision remplacement onduleurs",
-            min_value=0.0,
-            max_value=15.0,
-            value=3.0,
-            step=0.5,
-            format="%.1f €/kWc/an",
-        )
-
-        ifer_rate_eur_kwp = st.number_input(
-            "Tarif IFER si puissance > 100 kWc (€/kWc/an)",
-            min_value=0.0,
-            max_value=100.0,
-            value=3.542,
-            step=0.001,
-            format="%.3f",
-        )
-
-        other_annual_costs = st.number_input(
-            "Autres charges annuelles (€ HT/an)",
-            min_value=0.0,
-            max_value=1000000.0,
-            value=0.0,
-            step=100.0,
-        )
-
-        st.markdown("### Projection")
-
-        financial_horizon_years = st.slider(
-            "Durée de projection",
-            min_value=5,
-            max_value=40,
-            value=20,
-            step=1,
-            format="%d ans",
-        )
-
-        electricity_price_increase_percent = st.slider(
-            "Hausse annuelle du prix d'achat",
-            min_value=0.0,
-            max_value=10.0,
-            value=2.0,
-            step=0.1,
-            format="%.1f %%",
-        )
-
-        surplus_price_increase_percent = st.slider(
-            "Évolution annuelle du tarif de surplus",
-            min_value=-5.0,
-            max_value=10.0,
-            value=0.0,
-            step=0.1,
-            format="%.1f %%",
-        )
-
-        production_degradation_percent = st.slider(
-            "Dégradation annuelle de la production",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.5,
-            step=0.1,
-            format="%.1f %%",
-        )
-
-        operating_cost_increase_percent = st.slider(
-            "Hausse annuelle des charges",
-            min_value=0.0,
-            max_value=10.0,
-            value=2.0,
-            step=0.1,
-            format="%.1f %%",
-        )
-
-        discount_rate_percent = st.slider(
-            "Taux d'actualisation",
-            min_value=0.0,
-            max_value=15.0,
-            value=4.0,
-            step=0.1,
-            format="%.1f %%",
+            max_value=5.0,
+            value=0.0761,
+            step=0.0010,
+            format="%.4f",
+            key="surplus_sale_price_eur_kwh",
         )
 
         st.caption(
-            "Les coûts sont des ordres de grandeur HT issus des documents "
-            "métier transmis. Ils doivent être confirmés par des devis, une "
-            "étude structure et une proposition de raccordement Enedis."
+            "Les paramètres détaillés d'investissement, de raccordement et de "
+            "projection sont regroupés dans le bouton ci-dessous."
         )
+
+        with st.popover(
+            "⚙️ Paramètres financiers avancés",
+            use_container_width=True,
+        ):
+            st.markdown("### Investissement")
+
+            fixing_type = st.selectbox(
+                "Système de fixation",
+                list(PV_FIXING_COSTS_EUR_WC.keys()),
+                key="fixing_type",
+            )
+
+            erp_icpe_surcharge = st.checkbox(
+                "Projet ERP ou ICPE : ajouter 0,10 €/Wc",
+                value=False,
+                key="erp_icpe_surcharge",
+            )
+
+            structural_study_cost = st.number_input(
+                "Étude structure charpente/toiture (€ HT)",
+                min_value=0.0,
+                max_value=100000.0,
+                value=2000.0,
+                step=250.0,
+                key="structural_study_cost",
+            )
+
+            roof_renovation_enabled = st.checkbox(
+                "Intégrer une rénovation de couverture",
+                value=False,
+                key="roof_renovation_enabled",
+            )
+
+            roof_type = st.selectbox(
+                "Type de couverture à rénover",
+                list(ROOF_RENOVATION_COSTS_EUR_M2.keys()),
+                disabled=not roof_renovation_enabled,
+                key="roof_type",
+            )
+
+            roof_area_m2 = st.number_input(
+                "Surface de couverture concernée (m²)",
+                min_value=0.0,
+                max_value=100000.0,
+                value=0.0,
+                step=10.0,
+                disabled=not roof_renovation_enabled,
+                key="roof_area_m2",
+            )
+
+            asbestos_removal_enabled = st.checkbox(
+                "Prévoir un désamiantage à 60 €/m²",
+                value=False,
+                disabled=not roof_renovation_enabled,
+                key="asbestos_removal_enabled",
+            )
+
+            st.markdown("### Raccordement")
+
+            connection_mode = st.selectbox(
+                "Scénario indicatif de raccordement",
+                [
+                    "Aucun / inférieur ou égal à 36 kWc",
+                    "Branchement BT avec extension",
+                    "Branchement complet C4",
+                    "Création poste BT-HTA",
+                ],
+                key="connection_mode",
+            )
+
+            public_extension_length_m = st.number_input(
+                "Longueur d'extension publique (m)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=0.0,
+                step=5.0,
+                disabled=(
+                    connection_mode
+                    not in [
+                        "Branchement BT avec extension",
+                        "Création poste BT-HTA",
+                    ]
+                ),
+                key="public_extension_length_m",
+            )
+
+            apply_enedis_reduction = st.checkbox(
+                "Appliquer une réfaction Enedis indicative de 60 %",
+                value=True,
+                disabled=pv_peak_kwp <= 36,
+                help=(
+                    "Hypothèse indicative issue du document transmis. "
+                    "Elle doit être confirmée par une proposition de raccordement."
+                ),
+                key="apply_enedis_reduction",
+            )
+
+            private_trench_length_m = st.number_input(
+                "Tranchée interne privée (m)",
+                min_value=0.0,
+                max_value=10000.0,
+                value=0.0,
+                step=5.0,
+                key="private_trench_length_m",
+            )
+
+            include_private_hta_post = st.checkbox(
+                "Création d'un poste privé HTA/BT",
+                value=False,
+                key="include_private_hta_post",
+            )
+
+            include_decoupling_cell = st.checkbox(
+                "Ajouter une cellule de découplage",
+                value=False,
+                key="include_decoupling_cell",
+            )
+
+            other_investment_costs = st.number_input(
+                "Autres coûts d'investissement (€ HT)",
+                min_value=0.0,
+                max_value=10000000.0,
+                value=0.0,
+                step=500.0,
+                key="other_investment_costs",
+            )
+
+            grant_amount = st.number_input(
+                "Aides ou subventions déduites (€)",
+                min_value=0.0,
+                max_value=10000000.0,
+                value=0.0,
+                step=500.0,
+                key="grant_amount",
+            )
+
+            st.markdown("### Charges annuelles")
+
+            insurance_rate_percent = st.slider(
+                "Assurance multirisque et perte d'exploitation",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.5,
+                step=0.1,
+                format="%.1f %% de l'investissement",
+                key="insurance_rate_percent",
+            )
+
+            maintenance_eur_kwp = st.slider(
+                "Suivi et maintenance",
+                min_value=0.0,
+                max_value=30.0,
+                value=10.5,
+                step=0.5,
+                format="%.1f €/kWc/an",
+                key="maintenance_eur_kwp",
+            )
+
+            inverter_provision_eur_kwp = st.slider(
+                "Provision remplacement onduleurs",
+                min_value=0.0,
+                max_value=15.0,
+                value=3.0,
+                step=0.5,
+                format="%.1f €/kWc/an",
+                key="inverter_provision_eur_kwp",
+            )
+
+            ifer_rate_eur_kwp = st.number_input(
+                "Tarif IFER si puissance > 100 kWc (€/kWc/an)",
+                min_value=0.0,
+                max_value=100.0,
+                value=3.542,
+                step=0.001,
+                format="%.3f",
+                key="ifer_rate_eur_kwp",
+            )
+
+            other_annual_costs = st.number_input(
+                "Autres charges annuelles (€ HT/an)",
+                min_value=0.0,
+                max_value=1000000.0,
+                value=0.0,
+                step=100.0,
+                key="other_annual_costs",
+            )
+
+            st.markdown("### Projection")
+
+            financial_horizon_years = st.slider(
+                "Durée de projection",
+                min_value=5,
+                max_value=40,
+                value=20,
+                step=1,
+                format="%d ans",
+                key="financial_horizon_years",
+            )
+
+            electricity_price_increase_percent = st.slider(
+                "Hausse annuelle du prix d'achat",
+                min_value=0.0,
+                max_value=10.0,
+                value=2.0,
+                step=0.1,
+                format="%.1f %%",
+                key="electricity_price_increase_percent",
+            )
+
+            surplus_price_increase_percent = st.slider(
+                "Évolution annuelle du tarif de surplus",
+                min_value=-5.0,
+                max_value=10.0,
+                value=0.0,
+                step=0.1,
+                format="%.1f %%",
+                key="surplus_price_increase_percent",
+            )
+
+            production_degradation_percent = st.slider(
+                "Dégradation annuelle de la production",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.5,
+                step=0.1,
+                format="%.1f %%",
+                key="production_degradation_percent",
+            )
+
+            operating_cost_increase_percent = st.slider(
+                "Hausse annuelle des charges",
+                min_value=0.0,
+                max_value=10.0,
+                value=2.0,
+                step=0.1,
+                format="%.1f %%",
+                key="operating_cost_increase_percent",
+            )
+
+            discount_rate_percent = st.slider(
+                "Taux d'actualisation",
+                min_value=0.0,
+                max_value=15.0,
+                value=4.0,
+                step=0.1,
+                format="%.1f %%",
+                key="discount_rate_percent",
+            )
+
+            st.caption(
+                "Les coûts sont des ordres de grandeur HT issus des documents "
+                "métier transmis. Ils doivent être confirmés par des devis, une "
+                "étude structure et une proposition de raccordement Enedis."
+            )
 
 
 
@@ -6228,7 +6272,7 @@ tariff_summary_df = build_tariff_summary(filtered_df)
 analysis_start = filtered_df["Horodate"].min()
 analysis_end = filtered_df["Horodate"].max()
 analysis_days = max(
-    (analysis_end - analysis_start).total_seconds() / 86400,
+    (analysis_end - filtered_df["Horodate_debut"].min()).total_seconds() / 86400,
     1,
 )
 coverage_ratio = min(analysis_days / 365.25, 1.0)
@@ -6248,16 +6292,16 @@ hc_winter_kwh = float(tariff_values.get("HC hiver", 0))
 hp_summer_kwh = float(tariff_values.get("HP été", 0))
 hc_summer_kwh = float(tariff_values.get("HC été", 0))
 
-tariff_period_price_map = {
-    "HP hiver": hp_winter_electricity_price,
-    "HC hiver": hc_winter_electricity_price,
-    "HP été": hp_summer_electricity_price,
-    "HC été": hc_summer_electricity_price,
-}
+tariff_period_price_map = tariff_price_map(
+    tariff_type=electricity_tariff_type, unique_price=unique_electricity_price,
+    hp_price=hp_electricity_price, hc_price=hc_electricity_price,
+    hp_winter_price=hp_winter_electricity_price, hc_winter_price=hc_winter_electricity_price,
+    hp_summer_price=hp_summer_electricity_price, hc_summer_price=hc_summer_electricity_price,
+)
 tariff_summary_df["Prix_unitaire_EUR_kWh_HT"] = tariff_summary_df["Categorie_tarifaire"].map(tariff_period_price_map).fillna(0.0)
 tariff_summary_df["Montant_EUR_HT"] = tariff_summary_df["Consommation_kWh"] * tariff_summary_df["Prix_unitaire_EUR_kWh_HT"]
 tariff_variable_cost_eur = float(tariff_summary_df["Montant_EUR_HT"].sum())
-tariff_fixed_cost_eur = float(annual_subscription_eur)
+tariff_fixed_cost_eur = float(annual_subscription_eur) * analysis_days / 365.25
 tariff_total_cost_eur = tariff_variable_cost_eur + tariff_fixed_cost_eur
 
 total_kwh = filtered_df["Energie_kWh"].sum()
@@ -6266,7 +6310,9 @@ median_daily_kwh = daily_df["Consommation_kWh"].median()
 maximum_power_kw = filtered_df["Puissance_kW"].max()
 mean_power_kw = filtered_df["Puissance_kW"].mean()
 
-solar_analysis_available = selected_location is not None
+solar_analysis_available = pv_enabled and selected_location is not None
+if pv_enabled:
+    st.session_state["_resolved_location"] = selected_location
 pvgis_available = False
 solar_error = None
 solar_daily_df = pd.DataFrame()
@@ -6331,16 +6377,17 @@ if solar_analysis_available:
         )
 
         try:
-            pvgis_profile, pvgis_metadata = (
-                fetch_pvgis_reference_profile(
-                    latitude=selected_location["latitude"],
-                    longitude=selected_location["longitude"],
-                    tilt=pv_tilt,
-                    aspect=pv_aspect,
-                    peak_power_kwp=pv_peak_kwp,
-                    losses_percent=pv_losses,
-                )
-            )
+            solar_parameters = dict(latitude=selected_location["latitude"], longitude=selected_location["longitude"],
+                                    tilt=pv_tilt, aspect=pv_aspect, peak_power_kwp=pv_peak_kwp, losses_percent=pv_losses)
+            snapshot = st.session_state.get("_solar_snapshot")
+            if snapshot and snapshot["parameters"] == solar_parameters:
+                pvgis_profile = pd.DataFrame(snapshot["rows"])
+            else:
+                pvgis_profile, _ = fetch_pvgis_reference_profile(**solar_parameters)
+                st.session_state["_solar_snapshot"] = {
+                    "parameters": solar_parameters,
+                    "rows": json.loads(pvgis_profile.to_json(orient="records", double_precision=15)),
+                }
 
             filtered_df = merge_pvgis_profile(
                 filtered_df,
@@ -6615,24 +6662,13 @@ st.caption(interpretation)
 # ONGLETS
 # ============================================================
 
-# V18 — refonte ergonomique uniquement.
-# Les blocs de calcul et leurs fonctions restent inchangés : seule leur
-# organisation visuelle est regroupée par parcours métier.
-(
-    nav_consumption,
-    nav_pv,
-    nav_report,
-    nav_settings,
-    nav_benchmark,
-) = st.tabs(
-    [
-        "⚡ Consommations",
-        "☀️ Opportunité photovoltaïque",
-        "📄 Rapport & exports",
-        "⚙️ Paramètres",
-        "📊 Comparaison sectorielle",
-    ]
-)
+# The energy path does not construct photovoltaic tabs or contact PVGIS.
+if pv_enabled:
+    nav_consumption, nav_pv, nav_report, nav_settings = st.tabs(
+        ["⚡ Consommations", "☀️ Opportunité photovoltaïque", "📄 Rapport & exports", "⚙️ Paramètres"])
+else:
+    nav_consumption, nav_report, nav_settings = st.tabs(
+        ["⚡ Consommations", "📄 Rapport & exports", "⚙️ Paramètres"])
 
 with nav_consumption:
     st.markdown("## Analyse des consommations")
@@ -6658,23 +6694,24 @@ with nav_consumption:
         ]
     )
 
-with nav_pv:
-    st.markdown("## Opportunité photovoltaïque")
-    st.caption(
-        "Croiser la courbe de charge avec la production solaire et obtenir une "
-        "première simulation économique."
-    )
-    tab_solar, tab_financial = st.tabs(
-        [
-            "☀️ Production & autoconsommation",
-            "💶 Simulation économique indicative",
-        ]
-    )
+if pv_enabled:
+    with nav_pv:
+        st.markdown("## Opportunité photovoltaïque")
+        st.caption(
+            "Croiser la courbe de charge avec la production solaire et obtenir une "
+            "première simulation économique."
+        )
+        tab_solar, tab_financial = st.tabs(
+            [
+                "☀️ Production & autoconsommation",
+                "💶 Simulation économique indicative",
+            ]
+        )
 
 with nav_report:
     st.markdown("## Rapport & exports")
     st.caption(
-        "Retrouver les exports de données, personnaliser les livrables et reprendre un brouillon ultérieurement."
+        "Retrouver les exports de données, personnaliser les livrables et reprendre un dossier ultérieurement."
     )
 
     st.subheader("Aperçu éditable des livrables")
@@ -6689,9 +6726,10 @@ with nav_report:
         key="report_status",
     )
 
-    preview_energy, preview_pv = st.tabs(
-        ["⚡ Pré-diagnostic énergétique", "☀️ Rapport photovoltaïque"]
-    )
+    if pv_enabled:
+        preview_energy, preview_pv = st.tabs(["⚡ Pré-diagnostic énergétique", "☀️ Rapport photovoltaïque"])
+    else:
+        preview_energy = st.container()
 
     with preview_energy:
         st.caption("APERÇU DU LIVRABLE — les cadres correspondent aux principales parties du PDF.")
@@ -6789,7 +6827,7 @@ with nav_report:
             )
             tc1, tc2, tc3 = st.columns(3)
             tc1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 0)} € HT")
-            tc2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 0)} € HT")
+            tc2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 0)} € HT")
             tc3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HT")
             st.text_area(
                 "Commentaire du conseiller sur la tarification",
@@ -6817,54 +6855,56 @@ with nav_report:
                 height=100,
             )
 
-    with preview_pv:
-        st.caption(
-            "APERÇU DU LIVRABLE PHOTOVOLTAÏQUE — les informations calculées sont affichées "
-            "avec la zone d'analyse du conseiller à l'endroit où elle sera reprise dans le PDF."
-        )
-
-        with st.container(border=True):
-            st.markdown("### Synthèse de l'opportunité photovoltaïque")
-            pp1, pp2, pp3, pp4 = st.columns(4)
-            pp1.metric("Puissance étudiée", f"{format_fr(pv_peak_kwp, 1)} kWc")
-            pp2.metric("Production estimée", f"{format_fr(pvgis_production_kwh, 0)} kWh")
-            pp3.metric("Autoconsommation", f"{format_fr(self_consumption_rate, 1)} %")
-            pp4.metric("Autoproduction", f"{format_fr(self_sufficiency_rate, 1)} %")
+    if pv_enabled:
+        with preview_pv:
             st.caption(
-                f"Indice photovoltaïque CMA : {cma_score_data.get('score', 0):.0f}/100 "
-                f"— {cma_score_data.get('label', '')}"
-            )
-            st.text_area(
-                "Analyse / observations photovoltaïques",
-                key="note_pv_observations",
-                height=140,
-                placeholder="Interprétation du dimensionnement, contraintes, éléments à confirmer…",
+                "APERÇU DU LIVRABLE PHOTOVOLTAÏQUE — les informations calculées sont affichées "
+                "avec les annotations réparties dans les sections correspondantes du PDF."
             )
 
-        with st.container(border=True):
-            st.markdown("### Annotations reprises dans le rapport photovoltaïque")
-            st.caption(
-                "Le rapport photovoltaïque reprend aussi les informations communes saisies dans "
-                "le pré-diagnostic énergétique : contexte, horaires, équipements, profils, puissance, "
-                "tarification, préconisations et commentaires complémentaires."
-            )
-            pv_shared_notes = {
-                "Contexte": st.session_state.get("note_context", ""),
-                "Horaires / organisation": st.session_state.get("note_activity_hours", ""),
-                "Équipements / usages": st.session_state.get("note_equipment", ""),
-                "Profils de consommation": st.session_state.get("note_profile", ""),
-                "Puissance / pointes": st.session_state.get("note_power", ""),
-                "Tarification": st.session_state.get("note_tariff", ""),
-                "Préconisations": st.session_state.get("note_recommendations", ""),
-                "Commentaires complémentaires": st.session_state.get("note_general", ""),
-            }
-            filled_shared = {k: v for k, v in pv_shared_notes.items() if str(v).strip()}
-            if filled_shared:
-                for title, value in filled_shared.items():
-                    st.markdown(f"**{title}**")
-                    st.write(value)
-            else:
-                st.info("Aucune annotation commune n'est encore renseignée.")
+            with st.container(border=True):
+                st.markdown("### Synthèse de l'opportunité photovoltaïque")
+                pp1, pp2, pp3, pp4 = st.columns(4)
+                pp1.metric("Puissance étudiée", f"{format_fr(pv_peak_kwp, 1)} kWc")
+                pp2.metric("Production estimée", f"{format_fr(pvgis_production_kwh, 0)} kWh")
+                pp3.metric("Autoconsommation", f"{format_fr(self_consumption_rate, 1)} %")
+                pp4.metric("Autoproduction", f"{format_fr(self_sufficiency_rate, 1)} %")
+                st.caption(
+                    f"Indice photovoltaïque CMA : {cma_score_data.get('score', 0):.0f}/100 "
+                    f"— {cma_score_data.get('label', '')}"
+                )
+                st.text_area(
+                    "Analyse / observations photovoltaïques",
+                    key="note_pv_observations",
+                    height=140,
+                    placeholder="Interprétation du dimensionnement, contraintes, éléments à confirmer…",
+                )
+
+            with st.container(border=True):
+                st.markdown("### Annotations reprises dans le rapport photovoltaïque")
+                st.caption(
+                    "Le rapport photovoltaïque reprend aussi les informations communes saisies dans "
+                    "le pré-diagnostic énergétique : contexte, horaires, équipements, profils, puissance, "
+                    "tarification, points à approfondir, préconisations et commentaires complémentaires."
+                )
+                pv_shared_notes = {
+                    "Contexte": st.session_state.get("note_context", ""),
+                    "Horaires / organisation": st.session_state.get("note_activity_hours", ""),
+                    "Équipements / usages": st.session_state.get("note_equipment", ""),
+                    "Profils de consommation": st.session_state.get("note_profile", ""),
+                    "Puissance / pointes": st.session_state.get("note_power", ""),
+                    "Tarification": st.session_state.get("note_tariff", ""),
+                    "Points à approfondir": st.session_state.get("note_investigate", ""),
+                    "Préconisations": st.session_state.get("note_recommendations", ""),
+                    "Commentaires complémentaires": st.session_state.get("note_general", ""),
+                }
+                filled_shared = {k: v for k, v in pv_shared_notes.items() if str(v).strip()}
+                if filled_shared:
+                    for title, value in filled_shared.items():
+                        st.markdown(f"**{title}**")
+                        st.write(value)
+                else:
+                    st.info("Aucune annotation commune n'est encore renseignée.")
 
     report_notes = {
         "status": report_status,
@@ -6880,41 +6920,7 @@ with nav_report:
         "general": st.session_state.get("note_general", ""),
     }
 
-    draft_fields = {
-        "company_name": company_name,
-        "company_siret": company_siret,
-        "advisor_name": advisor_name,
-        "diagnostic_date": diagnostic_date.isoformat(),
-        "company_address": company_address,
-        "report_status": report_status,
-        "note_context": report_notes["context"],
-        "note_activity_hours": report_notes["activity_hours"],
-        "note_equipment": report_notes["equipment"],
-        "note_profile": report_notes["profile"],
-        "note_power": report_notes["power"],
-        "note_tariff": report_notes["tariff"],
-        "note_investigate": report_notes["investigate"],
-        "note_recommendations": report_notes["recommendations"],
-        "note_pv_observations": report_notes["pv_observations"],
-        "note_general": report_notes["general"],
-    }
-    draft_payload = {
-        "format": "cma-analyse-energetique-draft",
-        "version": 1,
-        "source_file": uploaded_file.name if uploaded_file is not None else "",
-        "fields": draft_fields,
-    }
-    draft_bytes = json.dumps(draft_payload, ensure_ascii=False, indent=2).encode("utf-8")
-    draft_name = (company_name.strip().replace(" ", "_") if company_name.strip() else "entreprise")
-    st.download_button(
-        "💾 Sauvegarder le brouillon (.json)",
-        data=draft_bytes,
-        file_name=f"brouillon_analyse_energetique_{draft_name}.json",
-        mime="application/json",
-        use_container_width=True,
-        key="download_draft_json",
-    )
-    st.info("Le brouillon conserve les informations entreprise, le statut et toutes les annotations des deux livrables. La courbe de charge reste à recharger séparément.")
+    st.info("La sauvegarde complète est disponible dans la barre latérale : elle inclut aussi vos fichiers et les réglages de l'analyse.")
 
     st.markdown("---")
     st.subheader("Exporter l'analyse")
@@ -6934,6 +6940,8 @@ with nav_report:
         if selected_year is not None and int(selected_year) in autocalsol_years
         else autocalsol_years[-1]
     )
+    if st.session_state.get("autocalsol_export_year") not in autocalsol_years:
+        st.session_state.pop("autocalsol_export_year", None)
     autocalsol_year = st.selectbox(
         "Année à exporter vers AutoCal-Sol",
         options=autocalsol_years,
@@ -7189,6 +7197,26 @@ with nav_report:
         }
     )
 
+    if not pv_enabled:
+        # Keep the consumption and tariff indicators, without a default PV project.
+        energy_indicators = {
+            "Nom de l'entreprise", "SIRET", "Conseiller CMA", "Date du diagnostic",
+            "Fichier source", "Début de période", "Fin de période", "Pas de temps source",
+            "Pas de temps après traitement", "Unité source", "Consommation totale (kWh)",
+            "Moyenne journalière (kWh)", "Médiane journalière (kWh)", "Pic de puissance (kW)",
+            "Adresse de l'entreprise", "HP hiver (kWh)", "HC hiver (kWh)", "HP été (kWh)",
+            "HC été (kWh)", "Part totale HP (%)", "Part totale HC (%)",
+            "Indice optimisation tarifaire CMA (/100)", "Appréciation indice tarifaire",
+            "Facteur de charge (%)", "Horodatages en doublon", "Jours atypiques",
+        }
+        summary_df = summary_df[summary_df["Indicateur"].isin(energy_indicators)].copy()
+        summary_df.loc[summary_df["Indicateur"] == "Adresse de l'entreprise", "Valeur"] = company_address
+    summary_df = pd.concat([summary_df, pd.DataFrame({
+        "Indicateur": ["Type de tarif", "Part variable sur la période (€ HT)",
+                       "Part fixe proratisée sur la période (€ HT)", "Total sur la période (€ HT)"],
+        "Valeur": [electricity_tariff_type, tariff_variable_cost_eur, tariff_fixed_cost_eur, tariff_total_cost_eur],
+    })], ignore_index=True)
+
     # Export principal obligatoirement normalisé à un pas horaire.
     # Les relevés de 30 minutes sont agrégés dans hourly_df :
     # - moyenne pour une unité de puissance (W / kW) ;
@@ -7410,6 +7438,7 @@ with nav_report:
         financial_summary_export,
         financial_projection["table"],
         summary_df,
+        include_photovoltaic=pv_enabled,
     )
 
     export1, export2 = st.columns(2)
@@ -7500,7 +7529,7 @@ with nav_report:
         st.download_button(
             "⬇️ Télécharger le classeur Excel complet",
             data=excel_bytes,
-            file_name="analyse_photovoltaique_cma.xlsx",
+            file_name="analyse_photovoltaique_cma.xlsx" if pv_enabled else "analyse_energetique_cma.xlsx",
             mime=(
                 "application/vnd.openxmlformats-officedocument."
                 "spreadsheetml.sheet"
@@ -7524,7 +7553,7 @@ with nav_report:
 
     st.markdown("---")
     st.subheader("Livrables PDF CMA")
-    st.caption("Deux livrables distincts sont disponibles : un pré-diagnostic énergétique centré sur les consommations et le rapport d'opportunité photovoltaïque historique.")
+    st.caption("Le pré-diagnostic énergétique est disponible ici. Le parcours photovoltaïque donne également accès au rapport solaire.")
 
     energy_address_label = (selected_location["label"] if selected_location is not None else company_address)
     try:
@@ -7557,7 +7586,10 @@ with nav_report:
         st.error(f"Le pré-diagnostic énergétique n'a pas pu être généré. Détail : {exc}")
 
     pdf_filename_company = company_name.strip().replace(" ", "_") if company_name.strip() else "entreprise"
-    report_col1, report_col2 = st.columns(2)
+    if pv_enabled:
+        report_col1, report_col2 = st.columns(2)
+    else:
+        report_col1 = st.container()
     with report_col1:
         st.markdown("#### ⚡ Pré-diagnostic énergétique")
         st.caption("Utilisable dès la réception de la courbe de charge, avant ou après le rendez-vous.")
@@ -7570,20 +7602,28 @@ with nav_report:
                 use_container_width=True,
                 key="download_energy_pdf",
             )
-    with report_col2:
-        st.markdown("#### ☀️ Opportunité photovoltaïque")
-        st.caption("Conserve le livrable photovoltaïque et intègre désormais les annotations du conseiller.")
-        if pdf_report_bytes:
-            st.download_button(
-                "📄 Télécharger le rapport photovoltaïque",
-                data=pdf_report_bytes,
-                file_name=f"pre_diagnostic_photovoltaique_{pdf_filename_company}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                key="download_pv_pdf",
-            )
-        else:
-            st.info("Validez une adresse et assurez-vous que les données PVGIS sont disponibles pour générer ce livrable.")
+    if pv_enabled:
+        with report_col2:
+            st.markdown("#### ☀️ Opportunité photovoltaïque")
+            st.caption("Conserve le livrable photovoltaïque et intègre désormais les annotations du conseiller.")
+            if pdf_report_bytes:
+                st.download_button(
+                    "📄 Télécharger le rapport photovoltaïque",
+                    data=pdf_report_bytes,
+                    file_name=f"pre_diagnostic_photovoltaique_{pdf_filename_company}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_pv_pdf",
+                )
+            else:
+                st.info("Validez une adresse et assurez-vous que les données PVGIS sont disponibles pour générer ce livrable.")
+
+    with st.expander("Vérifier la mise en page exacte avant téléchargement"):
+        st.caption("Ces aperçus affichent les mêmes PDF que les boutons de téléchargement. Modifiez les commentaires au-dessus pour les actualiser.")
+        if st.checkbox("Afficher le PDF énergétique", key="show_energy_pdf") and energy_pdf_bytes:
+            render_pdf_preview(energy_pdf_bytes)
+        if pv_enabled and pdf_report_bytes and st.checkbox("Afficher le PDF photovoltaïque", key="show_pv_pdf"):
+            render_pdf_preview(pdf_report_bytes)
 
     st.markdown(
         """
@@ -7610,38 +7650,10 @@ with nav_report:
     )
 
 with nav_settings:
-    st.markdown("## Paramètres")
-    st.info(
-        "Les paramètres techniques de l’étude restent accessibles dans la barre "
-        "latérale afin de pouvoir les ajuster à tout moment sans quitter l’analyse."
-    )
-    st.markdown(
-        """
-        **Paramètres actuellement conservés dans la barre latérale :**
-        - période et année analysées ;
-        - hypothèses photovoltaïques et localisation ;
-        - plages et paramètres tarifaires ;
-        - hypothèses économiques disponibles dans l’outil.
-
-        Cette V18 réorganise uniquement l’interface : **aucune formule de calcul
-        n’est modifiée**.
-        """
-    )
-
-with nav_benchmark:
-    st.markdown("## Comparaison sectorielle")
-    st.info(
-        "Fonctionnalité préparée pour une future base collaborative sécurisée CMA. "
-        "Aucune donnée d’entreprise n’est enregistrée par l’application actuelle."
-    )
-    st.markdown(
-        """
-        À terme, ce module pourra comparer de façon anonymisée l’entreprise étudiée
-        à des profils du même secteur : courbe horaire, talon de consommation,
-        saisonnalité, puissance maximale, répartition tarifaire et potentiel
-        d’autoconsommation.
-        """
-    )
+    st.markdown("## Paramètres et reprise du dossier")
+    st.write("Choisissez le parcours dans la barre latérale. Les réglages photovoltaïques restent conservés lorsque vous revenez à l’analyse énergétique.")
+    st.write("Le dossier complet contient les fichiers importés, les réglages et les annotations. Il peut être rechargé dans une nouvelle session ou transmis à un collègue.")
+    st.caption("Version 23 — dossiers complets, parcours énergie autonome et aperçus PDF.")
 
 
 # ============================================================
@@ -7709,20 +7721,24 @@ with tab_dashboard:
         ),
     )
 
-    metric4.metric(
-        "Part pendant le jour",
-        (
-            f"{format_fr(daylight_share, 1)} %"
-            if solar_analysis_available
-            else "Adresse requise"
-        ),
-        help=(
-            "Part de la consommation ayant lieu lorsque le soleil est "
-            "au-dessus de l'horizon. C'est un premier repère, mais il ne "
-            "tient pas compte de l'intensité du soleil. L'indicateur "
-            "« consommation pendant la production PV » est plus précis."
-        ),
-    )
+    if pv_enabled:
+        metric4.metric(
+            "Part pendant le jour",
+            (
+                f"{format_fr(daylight_share, 1)} %"
+                if solar_analysis_available
+                else "Adresse requise"
+            ),
+            help=(
+                "Part de la consommation ayant lieu lorsque le soleil est "
+                "au-dessus de l'horizon. C'est un premier repère, mais il ne "
+                "tient pas compte de l'intensité du soleil. L'indicateur "
+                "« consommation pendant la production PV » est plus précis."
+            ),
+        )
+
+    else:
+        metric4.metric("Couverture des données", f"{format_fr(coverage_percent, 1)} %")
 
     metric5.metric(
         "Facteur de charge",
@@ -7735,9 +7751,10 @@ with tab_dashboard:
     )
 
     st.markdown("### Coût de l'électricité")
+    st.caption("Montants HT sur la période sélectionnée. La part fixe annuelle est proratisée selon la durée couverte (base 365,25 jours).")
     synth_cost1, synth_cost2, synth_cost3 = st.columns(3)
     synth_cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
-    synth_cost2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
+    synth_cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
     synth_cost3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
 
     chart1, chart2 = st.columns([1.5, 1])
@@ -7766,45 +7783,53 @@ with tab_dashboard:
             use_container_width=True,
         )
 
-    with chart2:
-        fig_solar = go.Figure(
-            data=[
-                go.Pie(
-                    labels=[
-                        "Pendant le jour astronomique",
-                        "Nuit",
-                    ],
-                    values=[
-                        (
-                            daylight_kwh
-                            if solar_analysis_available
-                            else 0
+    if pv_enabled and solar_analysis_available:
+        with chart2:
+            fig_solar = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=[
+                            "Pendant le jour astronomique",
+                            "Nuit",
+                        ],
+                        values=[
+                            (
+                                daylight_kwh
+                                if solar_analysis_available
+                                else 0
+                            ),
+                            (
+                                max(total_kwh - daylight_kwh, 0)
+                                if solar_analysis_available
+                                else total_kwh
+                            ),
+                        ],
+                        hole=0.62,
+                        marker=dict(
+                            colors=[CMA_RED, "#DDE6EF"]
                         ),
-                        (
-                            max(total_kwh - daylight_kwh, 0)
-                            if solar_analysis_available
-                            else total_kwh
-                        ),
-                    ],
-                    hole=0.62,
-                    marker=dict(
-                        colors=[CMA_RED, "#DDE6EF"]
-                    ),
-                    textinfo="label+percent",
-                )
-            ]
-        )
+                        textinfo="label+percent",
+                    )
+                ]
+            )
 
-        fig_solar.update_layout(
-            title="Répartition de la consommation",
-            template="plotly_white",
-            showlegend=False,
-        )
+            fig_solar.update_layout(
+                title="Répartition de la consommation",
+                template="plotly_white",
+                showlegend=False,
+            )
 
-        st.plotly_chart(
-            fig_solar,
-            use_container_width=True,
-        )
+            st.plotly_chart(
+                fig_solar,
+                use_container_width=True,
+            )
+
+    else:
+        with chart2:
+            st.markdown("### Qualité des données")
+            st.metric("Points manquants", str(missing_points_count))
+            st.metric("Doublons hors changement d’heure", str(duplicate_count))
+            st.caption("Consultez l’onglet Qualité des données pour le détail des journées à contrôler.")
 
     if pvgis_available:
         st.subheader("Bilan énergétique de la simulation photovoltaïque")
@@ -7896,501 +7921,502 @@ with tab_dashboard:
 # ANALYSE SOLAIRE GÉOLOCALISÉE
 # ============================================================
 
-with tab_solar:
-    st.subheader("Analyse solaire géolocalisée")
-
-    if pvgis_available:
-        render_score_card(cma_score_data)
-
-    if not solar_analysis_available:
-        st.info(
-            "Saisissez puis validez l'adresse précise de l'entreprise "
-            "dans le panneau latéral pour calculer les heures de lever "
-            "et de coucher du soleil."
-        )
-    else:
-        st.success(
-            f"Adresse utilisée : **{selected_location['label']}**  \n"
-            f"Coordonnées : **{selected_location['latitude']:.6f}, "
-            f"{selected_location['longitude']:.6f}**  \n"
-            f"Source : **{selected_location.get('source', 'Géocodage')}**"
-        )
-
-        if solar_error:
-            st.warning(solar_error)
-
-        if not pd.isna(daylight_share) and (
-            daylight_share < 5 or daylight_share > 95
-        ):
-            st.warning(
-                "⚠️ La part de consommation pendant le jour paraît "
-                "inhabituelle. Consultez le diagnostic solaire ci-dessous "
-                "pour vérifier les horodatages, les coordonnées et les "
-                "heures de lever/coucher."
-            )
-
-        first_date_row = (
-            filtered_df.sort_values("Horodate")
-            .dropna(subset=["Lever_soleil", "Coucher_soleil"])
-            .iloc[0]
-        )
-        last_date_row = (
-            filtered_df.sort_values("Horodate")
-            .dropna(subset=["Lever_soleil", "Coucher_soleil"])
-            .iloc[-1]
-        )
-
-        s1, s2, s3, s4 = st.columns(4)
-
-        s1.metric(
-            "Lever au début de période",
-            first_date_row["Lever_soleil"].strftime("%H:%M"),
-            help=(
-                "Heure astronomique du lever du soleil au premier jour "
-                "analysé. La production photovoltaïque débute généralement "
-                "progressivement après cette heure."
-            ),
-        )
-        s2.metric(
-            "Coucher au début de période",
-            first_date_row["Coucher_soleil"].strftime("%H:%M"),
-            help=(
-                "Heure astronomique du coucher du soleil au premier jour "
-                "analysé. La production devient très faible avant d'atteindre "
-                "cette heure."
-            ),
-        )
-        s3.metric(
-            "Lever en fin de période",
-            last_date_row["Lever_soleil"].strftime("%H:%M"),
-            help=(
-                "Heure du lever du soleil au dernier jour analysé. La "
-                "différence avec le début de période illustre la variation "
-                "saisonnière de la durée du jour."
-            ),
-        )
-        s4.metric(
-            "Coucher en fin de période",
-            last_date_row["Coucher_soleil"].strftime("%H:%M"),
-            help=(
-                "Heure du coucher du soleil au dernier jour analysé. Elle "
-                "permet de visualiser l'allongement ou le raccourcissement "
-                "des journées sur la période."
-            ),
-        )
-
-        k1, k2, k3, k4 = st.columns(4)
-
-        k1.metric(
-            "Consommation pendant le jour",
-            f"{format_fr(daylight_kwh, 0)} kWh",
-            f"{format_fr(daylight_share, 1)} %",
-            help=(
-                "Énergie consommée lorsque le soleil est au-dessus de "
-                "l'horizon. Une part élevée est généralement favorable, "
-                "mais cet indicateur ne tient pas compte de l'intensité du "
-                "rayonnement solaire."
-            ),
-        )
-
-        k2.metric(
-            "Conso. pendant la production PV",
-            (
-                f"{format_fr(production_period_kwh, 0)} kWh"
-                if pvgis_available
-                else "PVGIS indisponible"
-            ),
-            (
-                f"{format_fr(production_period_share, 1)} %"
-                if pvgis_available
-                else None
-            ),
-            help=(
-                "Consommation observée uniquement pendant les intervalles "
-                "où l'installation simulée produit effectivement de "
-                "l'électricité. Cet indicateur tient compte de la variation "
-                "horaire du rayonnement estimé par PVGIS."
-            ),
-        )
-
-        k3.metric(
-            f"Production estimée {pv_peak_kwp:g} kWc",
-            (
-                f"{format_fr(pvgis_production_kwh, 0)} kWh"
-                if pvgis_available
-                else "PVGIS indisponible"
-            ),
-            help=(
-                "Énergie photovoltaïque que produirait le scénario étudié "
-                "sur la période, selon PVGIS. Le calcul tient compte de la "
-                "localisation, de la puissance, de l'orientation, de "
-                "l'inclinaison et des pertes renseignées."
-            ),
-        )
-
-        k4.metric(
-            "Taux d'autoproduction estimé",
-            (
-                f"{format_fr(self_sufficiency_rate, 1)} %"
-                if pvgis_available
-                else "PVGIS indisponible"
-            ),
-            help=(
-                "Part de la consommation de l'entreprise couverte par "
-                "l'électricité solaire autoconsommée. Par exemple, 25 % "
-                "signifie qu'environ un quart des besoins serait produit "
-                "et consommé sur place."
-            ),
-        )
+if pv_enabled:
+    with tab_solar:
+        st.subheader("Analyse solaire géolocalisée")
 
         if pvgis_available:
-            overlap_label, overlap_color = metric_status(
-                production_period_share,
-                [
-                    (70, "Très bonne correspondance horaire", "#2E8B57"),
-                    (50, "Correspondance favorable", "#69A84F"),
-                    (30, "Correspondance partielle", "#E0A800"),
-                    (0, "Correspondance limitée", "#C0392B"),
-                ],
+            render_score_card(cma_score_data)
+
+        if not solar_analysis_available:
+            st.info(
+                "Saisissez puis validez l'adresse précise de l'entreprise "
+                "dans le panneau latéral pour calculer les heures de lever "
+                "et de coucher du soleil."
             )
-            autocons_label, autocons_color = metric_status(
-                self_consumption_rate,
-                [
-                    (85, "Très forte valorisation sur place", "#2E8B57"),
-                    (70, "Bonne valorisation sur place", "#69A84F"),
-                    (50, "Valorisation moyenne", "#E0A800"),
-                    (0, "Surplus potentiellement important", "#E67E22"),
-                ],
-            )
-            autoprod_label, autoprod_color = metric_status(
-                self_sufficiency_rate,
-                [
-                    (40, "Couverture importante des besoins", "#2E8B57"),
-                    (25, "Couverture significative", "#69A84F"),
-                    (15, "Couverture modérée", "#E0A800"),
-                    (0, "Couverture limitée", "#E67E22"),
-                ],
+        else:
+            st.success(
+                f"Adresse utilisée : **{selected_location['label']}**  \n"
+                f"Coordonnées : **{selected_location['latitude']:.6f}, "
+                f"{selected_location['longitude']:.6f}**  \n"
+                f"Source : **{selected_location.get('source', 'Géocodage')}**"
             )
 
-            st.markdown(
-                f"""
-                <div class="pedagogy-card">
-                    <strong>Lecture pédagogique des résultats</strong><br>
-                    {render_status_pill(overlap_label, overlap_color)}
-                    {render_status_pill(autocons_label, autocons_color)}
-                    {render_status_pill(autoprod_label, autoprod_color)}
-                    <br><br>
-                    Le <strong>taux d'autoconsommation</strong> indique ce que
-                    l'entreprise utilise de sa production solaire. Le
-                    <strong>taux d'autoproduction</strong> indique la part de
-                    ses besoins couverte par cette production. Ces deux taux
-                    répondent donc à des questions différentes.
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            if solar_error:
+                st.warning(solar_error)
 
-            a1, a2 = st.columns(2)
-
-            with a1:
-                st.metric(
-                    "Énergie PV autoconsommée estimée",
-                    f"{format_fr(self_consumed_kwh, 0)} kWh",
-                    help=(
-                        "Quantité d'électricité solaire utilisée directement "
-                        "par le bâtiment. C'est cette énergie qui évite un "
-                        "achat équivalent auprès du fournisseur, sous réserve "
-                        "des tarifs et conditions du contrat."
-                    ),
+            if not pd.isna(daylight_share) and (
+                daylight_share < 5 or daylight_share > 95
+            ):
+                st.warning(
+                    "⚠️ La part de consommation pendant le jour paraît "
+                    "inhabituelle. Consultez le diagnostic solaire ci-dessous "
+                    "pour vérifier les horodatages, les coordonnées et les "
+                    "heures de lever/coucher."
                 )
 
-            with a2:
-                st.metric(
-                    "Taux d'autoconsommation estimé",
-                    f"{format_fr(self_consumption_rate, 1)} %",
-                    help=(
-                        "Part de la production photovoltaïque consommée "
-                        "immédiatement sur place. Un taux élevé limite le "
-                        "surplus, mais ne signifie pas forcément que les "
-                        "panneaux couvrent une grande part des besoins."
-                    ),
-                )
-
-            solar_plot = filtered_df[
-                [
-                    "Horodate",
-                    "Puissance_kW",
-                    "Production_PV_kW",
-                    "Irradiation_Wm2",
-                ]
-            ].copy()
-
-            fig_power_compare = go.Figure()
-
-            fig_power_compare.add_trace(
-                go.Scatter(
-                    x=solar_plot["Horodate"],
-                    y=solar_plot["Puissance_kW"],
-                    name="Consommation",
-                    mode="lines",
-                    line=dict(color=CMA_BLUE, width=1.5),
-                )
+            first_date_row = (
+                filtered_df.sort_values("Horodate")
+                .dropna(subset=["Lever_soleil", "Coucher_soleil"])
+                .iloc[0]
+            )
+            last_date_row = (
+                filtered_df.sort_values("Horodate")
+                .dropna(subset=["Lever_soleil", "Coucher_soleil"])
+                .iloc[-1]
             )
 
-            fig_power_compare.add_trace(
-                go.Scatter(
-                    x=solar_plot["Horodate"],
-                    y=solar_plot["Production_PV_kW"],
-                    name="Production PV estimée",
-                    mode="lines",
-                    line=dict(color=CMA_RED, width=1.5),
-                )
-            )
+            s1, s2, s3, s4 = st.columns(4)
 
-            fig_power_compare.update_layout(
-                title=(
-                    "Consommation et production photovoltaïque "
-                    "de référence"
+            s1.metric(
+                "Lever au début de période",
+                first_date_row["Lever_soleil"].strftime("%H:%M"),
+                help=(
+                    "Heure astronomique du lever du soleil au premier jour "
+                    "analysé. La production photovoltaïque débute généralement "
+                    "progressivement après cette heure."
                 ),
-                xaxis_title="Date et heure",
-                yaxis_title="Puissance (kW)",
-                template="plotly_white",
-                hovermode="x unified",
+            )
+            s2.metric(
+                "Coucher au début de période",
+                first_date_row["Coucher_soleil"].strftime("%H:%M"),
+                help=(
+                    "Heure astronomique du coucher du soleil au premier jour "
+                    "analysé. La production devient très faible avant d'atteindre "
+                    "cette heure."
+                ),
+            )
+            s3.metric(
+                "Lever en fin de période",
+                last_date_row["Lever_soleil"].strftime("%H:%M"),
+                help=(
+                    "Heure du lever du soleil au dernier jour analysé. La "
+                    "différence avec le début de période illustre la variation "
+                    "saisonnière de la durée du jour."
+                ),
+            )
+            s4.metric(
+                "Coucher en fin de période",
+                last_date_row["Coucher_soleil"].strftime("%H:%M"),
+                help=(
+                    "Heure du coucher du soleil au dernier jour analysé. Elle "
+                    "permet de visualiser l'allongement ou le raccourcissement "
+                    "des journées sur la période."
+                ),
             )
 
-            st.plotly_chart(
-                fig_power_compare,
-                use_container_width=True,
+            k1, k2, k3, k4 = st.columns(4)
+
+            k1.metric(
+                "Consommation pendant le jour",
+                f"{format_fr(daylight_kwh, 0)} kWh",
+                f"{format_fr(daylight_share, 1)} %",
+                help=(
+                    "Énergie consommée lorsque le soleil est au-dessus de "
+                    "l'horizon. Une part élevée est généralement favorable, "
+                    "mais cet indicateur ne tient pas compte de l'intensité du "
+                    "rayonnement solaire."
+                ),
             )
 
-            fig_irradiation = px.line(
-                solar_plot,
-                x="Horodate",
-                y="Irradiation_Wm2",
-                title="Irradiation solaire de référence PVGIS",
-                labels={
-                    "Horodate": "Date et heure",
-                    "Irradiation_Wm2": "Irradiation (W/m²)",
-                },
-                color_discrete_sequence=[CMA_RED],
+            k2.metric(
+                "Conso. pendant la production PV",
+                (
+                    f"{format_fr(production_period_kwh, 0)} kWh"
+                    if pvgis_available
+                    else "PVGIS indisponible"
+                ),
+                (
+                    f"{format_fr(production_period_share, 1)} %"
+                    if pvgis_available
+                    else None
+                ),
+                help=(
+                    "Consommation observée uniquement pendant les intervalles "
+                    "où l'installation simulée produit effectivement de "
+                    "l'électricité. Cet indicateur tient compte de la variation "
+                    "horaire du rayonnement estimé par PVGIS."
+                ),
             )
 
-            fig_irradiation.update_layout(
-                template="plotly_white",
-                hovermode="x unified",
+            k3.metric(
+                f"Production estimée {pv_peak_kwp:g} kWc",
+                (
+                    f"{format_fr(pvgis_production_kwh, 0)} kWh"
+                    if pvgis_available
+                    else "PVGIS indisponible"
+                ),
+                help=(
+                    "Énergie photovoltaïque que produirait le scénario étudié "
+                    "sur la période, selon PVGIS. Le calcul tient compte de la "
+                    "localisation, de la puissance, de l'orientation, de "
+                    "l'inclinaison et des pertes renseignées."
+                ),
             )
 
-            st.plotly_chart(
-                fig_irradiation,
-                use_container_width=True,
+            k4.metric(
+                "Taux d'autoproduction estimé",
+                (
+                    f"{format_fr(self_sufficiency_rate, 1)} %"
+                    if pvgis_available
+                    else "PVGIS indisponible"
+                ),
+                help=(
+                    "Part de la consommation de l'entreprise couverte par "
+                    "l'électricité solaire autoconsommée. Par exemple, 25 % "
+                    "signifie qu'environ un quart des besoins serait produit "
+                    "et consommé sur place."
+                ),
             )
 
-            st.subheader("Bilan des flux d'énergie")
-
-            solar_balance_data = pd.DataFrame(
-                {
-                    "Flux": [
-                        "Solaire autoconsommé",
-                        "Surplus photovoltaïque",
-                        "Achat au réseau",
+            if pvgis_available:
+                overlap_label, overlap_color = metric_status(
+                    production_period_share,
+                    [
+                        (70, "Très bonne correspondance horaire", "#2E8B57"),
+                        (50, "Correspondance favorable", "#69A84F"),
+                        (30, "Correspondance partielle", "#E0A800"),
+                        (0, "Correspondance limitée", "#C0392B"),
                     ],
-                    "Energie_kWh": [
-                        self_consumed_kwh,
-                        pv_surplus_kwh,
-                        grid_import_kwh,
+                )
+                autocons_label, autocons_color = metric_status(
+                    self_consumption_rate,
+                    [
+                        (85, "Très forte valorisation sur place", "#2E8B57"),
+                        (70, "Bonne valorisation sur place", "#69A84F"),
+                        (50, "Valorisation moyenne", "#E0A800"),
+                        (0, "Surplus potentiellement important", "#E67E22"),
                     ],
-                }
-            )
+                )
+                autoprod_label, autoprod_color = metric_status(
+                    self_sufficiency_rate,
+                    [
+                        (40, "Couverture importante des besoins", "#2E8B57"),
+                        (25, "Couverture significative", "#69A84F"),
+                        (15, "Couverture modérée", "#E0A800"),
+                        (0, "Couverture limitée", "#E67E22"),
+                    ],
+                )
 
-            fig_solar_balance = go.Figure(
-                data=[
-                    go.Pie(
-                        labels=solar_balance_data["Flux"],
-                        values=solar_balance_data["Energie_kWh"],
-                        hole=0.55,
-                        marker=dict(
-                            colors=[
-                                CMA_RED,
-                                "#F4A261",
-                                CMA_BLUE,
-                            ]
-                        ),
-                        textinfo="label+percent",
-                        hovertemplate=(
-                            "%{label}<br>"
-                            "%{value:,.0f} kWh"
-                            "<extra></extra>"
+                st.markdown(
+                    f"""
+                    <div class="pedagogy-card">
+                        <strong>Lecture pédagogique des résultats</strong><br>
+                        {render_status_pill(overlap_label, overlap_color)}
+                        {render_status_pill(autocons_label, autocons_color)}
+                        {render_status_pill(autoprod_label, autoprod_color)}
+                        <br><br>
+                        Le <strong>taux d'autoconsommation</strong> indique ce que
+                        l'entreprise utilise de sa production solaire. Le
+                        <strong>taux d'autoproduction</strong> indique la part de
+                        ses besoins couverte par cette production. Ces deux taux
+                        répondent donc à des questions différentes.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                a1, a2 = st.columns(2)
+
+                with a1:
+                    st.metric(
+                        "Énergie PV autoconsommée estimée",
+                        f"{format_fr(self_consumed_kwh, 0)} kWh",
+                        help=(
+                            "Quantité d'électricité solaire utilisée directement "
+                            "par le bâtiment. C'est cette énergie qui évite un "
+                            "achat équivalent auprès du fournisseur, sous réserve "
+                            "des tarifs et conditions du contrat."
                         ),
                     )
-                ]
-            )
 
-            fig_solar_balance.update_layout(
-                title=(
-                    "Autoconsommation, surplus et électricité "
-                    "achetée au réseau"
-                ),
-                template="plotly_white",
-                showlegend=False,
-            )
-
-            st.plotly_chart(
-                fig_solar_balance,
-                use_container_width=True,
-            )
-
-            st.markdown(
-                f"""
-                **Lecture simple :**
-
-                - **{format_fr(self_consumed_kwh, 0)} kWh** de production
-                  solaire pourraient être consommés directement ;
-                - **{format_fr(pv_surplus_kwh, 0)} kWh** constitueraient un
-                  surplus potentiel ;
-                - **{format_fr(grid_import_kwh, 0)} kWh** resteraient à
-                  acheter au réseau.
-                """
-            )
-
-        st.subheader("Diagnostic du calcul solaire")
-
-        d1, d2, d3, d4 = st.columns(4)
-
-        d1.metric(
-            "Relevés analysés",
-            solar_rows_count,
-        )
-        d2.metric(
-            "Relevés classés en journée",
-            solar_day_rows_count,
-        )
-        d3.metric(
-            "Relevés avec lever/coucher",
-            solar_event_rows_count,
-        )
-        d4.metric(
-            "Cohérence des 2 méthodes",
-            (
-                f"{format_fr(solar_coherence_rate, 1)} %"
-                if not pd.isna(solar_coherence_rate)
-                else "N/D"
-            ),
-        )
-
-        diagnostic_columns = [
-            "Horodate",
-            "Horodate_milieu",
-            "Hauteur_soleil_deg",
-            "Lever_soleil",
-            "Coucher_soleil",
-            "Soleil_leve",
-            "Dans_intervalle_lever_coucher",
-            "Controle_solaire_coherent",
-            "Energie_kWh",
-        ]
-
-        diagnostic_table = filtered_df[
-            [
-                column
-                for column in diagnostic_columns
-                if column in filtered_df.columns
-            ]
-        ].head(48).copy()
-
-        for datetime_column in [
-            "Horodate",
-            "Horodate_milieu",
-            "Lever_soleil",
-            "Coucher_soleil",
-        ]:
-            if datetime_column in diagnostic_table.columns:
-                diagnostic_table[datetime_column] = (
-                    pd.to_datetime(
-                        diagnostic_table[datetime_column],
-                        errors="coerce",
+                with a2:
+                    st.metric(
+                        "Taux d'autoconsommation estimé",
+                        f"{format_fr(self_consumption_rate, 1)} %",
+                        help=(
+                            "Part de la production photovoltaïque consommée "
+                            "immédiatement sur place. Un taux élevé limite le "
+                            "surplus, mais ne signifie pas forcément que les "
+                            "panneaux couvrent une grande part des besoins."
+                        ),
                     )
-                    .dt.strftime("%d/%m/%Y %H:%M")
+
+                solar_plot = filtered_df[
+                    [
+                        "Horodate",
+                        "Puissance_kW",
+                        "Production_PV_kW",
+                        "Irradiation_Wm2",
+                    ]
+                ].copy()
+
+                fig_power_compare = go.Figure()
+
+                fig_power_compare.add_trace(
+                    go.Scatter(
+                        x=solar_plot["Horodate"],
+                        y=solar_plot["Puissance_kW"],
+                        name="Consommation",
+                        mode="lines",
+                        line=dict(color=CMA_BLUE, width=1.5),
+                    )
                 )
 
-        st.dataframe(
-            diagnostic_table,
-            use_container_width=True,
-            height=520,
-        )
+                fig_power_compare.add_trace(
+                    go.Scatter(
+                        x=solar_plot["Horodate"],
+                        y=solar_plot["Production_PV_kW"],
+                        name="Production PV estimée",
+                        mode="lines",
+                        line=dict(color=CMA_RED, width=1.5),
+                    )
+                )
 
-        st.caption(
-            "La colonne « Horodate_milieu » correspond au milieu de "
-            "l'intervalle de consommation. La journée est déterminée "
-            "principalement à partir de la hauteur apparente du soleil. "
-            "La comparaison avec les heures de lever et coucher sert de "
-            "contrôle indépendant."
-        )
+                fig_power_compare.update_layout(
+                    title=(
+                        "Consommation et production photovoltaïque "
+                        "de référence"
+                    ),
+                    xaxis_title="Date et heure",
+                    yaxis_title="Puissance (kW)",
+                    template="plotly_white",
+                    hovermode="x unified",
+                )
 
-        st.subheader("Lever et coucher du soleil par jour")
+                st.plotly_chart(
+                    fig_power_compare,
+                    use_container_width=True,
+                )
 
-        sunrise_table = (
-            filtered_df[
-                [
-                    "Date_solaire",
-                    "Lever_soleil",
-                    "Midi_solaire",
-                    "Coucher_soleil",
-                ]
+                fig_irradiation = px.line(
+                    solar_plot,
+                    x="Horodate",
+                    y="Irradiation_Wm2",
+                    title="Irradiation solaire de référence PVGIS",
+                    labels={
+                        "Horodate": "Date et heure",
+                        "Irradiation_Wm2": "Irradiation (W/m²)",
+                    },
+                    color_discrete_sequence=[CMA_RED],
+                )
+
+                fig_irradiation.update_layout(
+                    template="plotly_white",
+                    hovermode="x unified",
+                )
+
+                st.plotly_chart(
+                    fig_irradiation,
+                    use_container_width=True,
+                )
+
+                st.subheader("Bilan des flux d'énergie")
+
+                solar_balance_data = pd.DataFrame(
+                    {
+                        "Flux": [
+                            "Solaire autoconsommé",
+                            "Surplus photovoltaïque",
+                            "Achat au réseau",
+                        ],
+                        "Energie_kWh": [
+                            self_consumed_kwh,
+                            pv_surplus_kwh,
+                            grid_import_kwh,
+                        ],
+                    }
+                )
+
+                fig_solar_balance = go.Figure(
+                    data=[
+                        go.Pie(
+                            labels=solar_balance_data["Flux"],
+                            values=solar_balance_data["Energie_kWh"],
+                            hole=0.55,
+                            marker=dict(
+                                colors=[
+                                    CMA_RED,
+                                    "#F4A261",
+                                    CMA_BLUE,
+                                ]
+                            ),
+                            textinfo="label+percent",
+                            hovertemplate=(
+                                "%{label}<br>"
+                                "%{value:,.0f} kWh"
+                                "<extra></extra>"
+                            ),
+                        )
+                    ]
+                )
+
+                fig_solar_balance.update_layout(
+                    title=(
+                        "Autoconsommation, surplus et électricité "
+                        "achetée au réseau"
+                    ),
+                    template="plotly_white",
+                    showlegend=False,
+                )
+
+                st.plotly_chart(
+                    fig_solar_balance,
+                    use_container_width=True,
+                )
+
+                st.markdown(
+                    f"""
+                    **Lecture simple :**
+
+                    - **{format_fr(self_consumed_kwh, 0)} kWh** de production
+                      solaire pourraient être consommés directement ;
+                    - **{format_fr(pv_surplus_kwh, 0)} kWh** constitueraient un
+                      surplus potentiel ;
+                    - **{format_fr(grid_import_kwh, 0)} kWh** resteraient à
+                      acheter au réseau.
+                    """
+                )
+
+            st.subheader("Diagnostic du calcul solaire")
+
+            d1, d2, d3, d4 = st.columns(4)
+
+            d1.metric(
+                "Relevés analysés",
+                solar_rows_count,
+            )
+            d2.metric(
+                "Relevés classés en journée",
+                solar_day_rows_count,
+            )
+            d3.metric(
+                "Relevés avec lever/coucher",
+                solar_event_rows_count,
+            )
+            d4.metric(
+                "Cohérence des 2 méthodes",
+                (
+                    f"{format_fr(solar_coherence_rate, 1)} %"
+                    if not pd.isna(solar_coherence_rate)
+                    else "N/D"
+                ),
+            )
+
+            diagnostic_columns = [
+                "Horodate",
+                "Horodate_milieu",
+                "Hauteur_soleil_deg",
+                "Lever_soleil",
+                "Coucher_soleil",
+                "Soleil_leve",
+                "Dans_intervalle_lever_coucher",
+                "Controle_solaire_coherent",
+                "Energie_kWh",
             ]
-            .drop_duplicates()
-            .sort_values("Date_solaire")
-            .copy()
-        )
 
-        sunrise_table["Date"] = (
-            sunrise_table["Date_solaire"]
-            .dt.strftime("%d/%m/%Y")
-        )
-        sunrise_table["Lever"] = (
-            sunrise_table["Lever_soleil"]
-            .dt.strftime("%H:%M")
-        )
-        sunrise_table["Midi solaire"] = (
-            sunrise_table["Midi_solaire"]
-            .dt.strftime("%H:%M")
-        )
-        sunrise_table["Coucher"] = (
-            sunrise_table["Coucher_soleil"]
-            .dt.strftime("%H:%M")
-        )
-        sunrise_table["Durée du jour"] = (
-            sunrise_table["Coucher_soleil"]
-            - sunrise_table["Lever_soleil"]
-        ).dt.total_seconds() / 3600
-
-        st.dataframe(
-            sunrise_table[
+            diagnostic_table = filtered_df[
                 [
-                    "Date",
-                    "Lever",
-                    "Midi solaire",
-                    "Coucher",
-                    "Durée du jour",
+                    column
+                    for column in diagnostic_columns
+                    if column in filtered_df.columns
                 ]
-            ].style.format(
-                {"Durée du jour": "{:.2f} h"}
-            ),
-            use_container_width=True,
-            height=440,
-        )
+            ].head(48).copy()
 
-        st.caption(
-            "Les heures de lever et de coucher sont des calculs "
-            "astronomiques précis pour les coordonnées retenues. "
-            "Les valeurs PVGIS correspondent à un profil de référence "
-            "moyen calculé sur 2020-2023 ; elles ne constituent pas une "
-            "mesure météorologique réelle de chaque journée analysée."
-        )
+            for datetime_column in [
+                "Horodate",
+                "Horodate_milieu",
+                "Lever_soleil",
+                "Coucher_soleil",
+            ]:
+                if datetime_column in diagnostic_table.columns:
+                    diagnostic_table[datetime_column] = (
+                        pd.to_datetime(
+                            diagnostic_table[datetime_column],
+                            errors="coerce",
+                        )
+                        .dt.strftime("%d/%m/%Y %H:%M")
+                    )
+
+            st.dataframe(
+                diagnostic_table,
+                use_container_width=True,
+                height=520,
+            )
+
+            st.caption(
+                "La colonne « Horodate_milieu » correspond au milieu de "
+                "l'intervalle de consommation. La journée est déterminée "
+                "principalement à partir de la hauteur apparente du soleil. "
+                "La comparaison avec les heures de lever et coucher sert de "
+                "contrôle indépendant."
+            )
+
+            st.subheader("Lever et coucher du soleil par jour")
+
+            sunrise_table = (
+                filtered_df[
+                    [
+                        "Date_solaire",
+                        "Lever_soleil",
+                        "Midi_solaire",
+                        "Coucher_soleil",
+                    ]
+                ]
+                .drop_duplicates()
+                .sort_values("Date_solaire")
+                .copy()
+            )
+
+            sunrise_table["Date"] = (
+                sunrise_table["Date_solaire"]
+                .dt.strftime("%d/%m/%Y")
+            )
+            sunrise_table["Lever"] = (
+                sunrise_table["Lever_soleil"]
+                .dt.strftime("%H:%M")
+            )
+            sunrise_table["Midi solaire"] = (
+                sunrise_table["Midi_solaire"]
+                .dt.strftime("%H:%M")
+            )
+            sunrise_table["Coucher"] = (
+                sunrise_table["Coucher_soleil"]
+                .dt.strftime("%H:%M")
+            )
+            sunrise_table["Durée du jour"] = (
+                sunrise_table["Coucher_soleil"]
+                - sunrise_table["Lever_soleil"]
+            ).dt.total_seconds() / 3600
+
+            st.dataframe(
+                sunrise_table[
+                    [
+                        "Date",
+                        "Lever",
+                        "Midi solaire",
+                        "Coucher",
+                        "Durée du jour",
+                    ]
+                ].style.format(
+                    {"Durée du jour": "{:.2f} h"}
+                ),
+                use_container_width=True,
+                height=440,
+            )
+
+            st.caption(
+                "Les heures de lever et de coucher sont des calculs "
+                "astronomiques précis pour les coordonnées retenues. "
+                "Les valeurs PVGIS correspondent à un profil de référence "
+                "moyen calculé sur 2020-2023 ; elles ne constituent pas une "
+                "mesure météorologique réelle de chaque journée analysée."
+            )
 
 
-# ============================================================
-# ANALYSE TARIFAIRE
-# ============================================================
+    # ============================================================
+    # ANALYSE TARIFAIRE
+    # ============================================================
 
 
 with tab_pma:
@@ -8480,7 +8506,7 @@ with tab_tariff:
     )
     cost1, cost2, cost3 = st.columns(3)
     cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
-    cost2.metric("Part fixe", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
+    cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
     cost3.metric("Total part fixe + part variable", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
 
     if coverage_ratio < 0.95:
@@ -8664,429 +8690,430 @@ with tab_tariff:
 # SIMULATION ÉCONOMIQUE INDICATIVE
 # ============================================================
 
-with tab_financial:
-    st.subheader("Étude financière indicative du projet")
+if pv_enabled:
+    with tab_financial:
+        st.subheader("Étude financière indicative du projet")
 
-    st.warning(
-        "Cette simulation fournit des ordres de grandeur HT. "
-        "Elle ne remplace pas les devis, l'étude structure, la proposition "
-        "de raccordement Enedis, l'analyse fiscale ou le plan de financement."
-    )
-
-    if not pvgis_available:
-        st.info(
-            "L'adresse et les données PVGIS sont nécessaires pour valoriser "
-            "l'autoconsommation et le surplus. Les coûts d'investissement "
-            "restent néanmoins consultables."
+        st.warning(
+            "Cette simulation fournit des ordres de grandeur HT. "
+            "Elle ne remplace pas les devis, l'étude structure, la proposition "
+            "de raccordement Enedis, l'analyse fiscale ou le plan de financement."
         )
 
-    st.markdown(
-        f"""
-        <div class="score-card" style="--score-color:{business_assistant['color']};">
-            <div class="score-circle">
-                <div class="score-number">{cma_score_data['score']:.0f}</div>
-                <div class="score-total">score PV / 100</div>
-            </div>
-            <div>
-                <div class="score-title">
-                    Assistant CMA — {business_assistant['headline']}
+        if not pvgis_available:
+            st.info(
+                "L'adresse et les données PVGIS sont nécessaires pour valoriser "
+                "l'autoconsommation et le surplus. Les coûts d'investissement "
+                "restent néanmoins consultables."
+            )
+
+        st.markdown(
+            f"""
+            <div class="score-card" style="--score-color:{business_assistant['color']};">
+                <div class="score-circle">
+                    <div class="score-number">{cma_score_data['score']:.0f}</div>
+                    <div class="score-total">score PV / 100</div>
                 </div>
-                <p class="score-text">{business_assistant['conclusion']}</p>
-                {render_status_pill(
-                    business_assistant['status'],
-                    business_assistant['color'],
-                )}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    assistant_col1, assistant_col2 = st.columns(2)
-
-    with assistant_col1:
-        st.markdown(
-            f"""
-            <div class="pedagogy-card">
-                <strong>✅ Points favorables</strong><br><br>
-                {assistant_html_list(
-                    business_assistant['strengths'],
-                    '•',
-                )}
+                <div>
+                    <div class="score-title">
+                        Assistant CMA — {business_assistant['headline']}
+                    </div>
+                    <p class="score-text">{business_assistant['conclusion']}</p>
+                    {render_status_pill(
+                        business_assistant['status'],
+                        business_assistant['color'],
+                    )}
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with assistant_col2:
-        st.markdown(
-            f"""
-            <div class="pedagogy-card">
-                <strong>⚠️ Points de vigilance</strong><br><br>
-                {assistant_html_list(
-                    business_assistant['vigilance'],
-                    '•',
-                )}
-            </div>
-            """,
-            unsafe_allow_html=True,
+        assistant_col1, assistant_col2 = st.columns(2)
+
+        with assistant_col1:
+            st.markdown(
+                f"""
+                <div class="pedagogy-card">
+                    <strong>✅ Points favorables</strong><br><br>
+                    {assistant_html_list(
+                        business_assistant['strengths'],
+                        '•',
+                    )}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with assistant_col2:
+            st.markdown(
+                f"""
+                <div class="pedagogy-card">
+                    <strong>⚠️ Points de vigilance</strong><br><br>
+                    {assistant_html_list(
+                        business_assistant['vigilance'],
+                        '•',
+                    )}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with st.expander("🧭 Prochaines étapes recommandées"):
+            for step_number, step_text in enumerate(
+                business_assistant["next_steps"],
+                start=1,
+            ):
+                st.markdown(f"**{step_number}.** {step_text}")
+
+        f1, f2, f3, f4 = st.columns(4)
+
+        f1.metric(
+            "Investissement brut",
+            f"{format_fr(investment_data['gross_total'], 0)} € HT",
+            help="Somme des équipements, fixation, études, toiture, raccordement et autres coûts.",
+        )
+        f2.metric(
+            "Investissement net",
+            f"{format_fr(investment_data['net_total'], 0)} € HT",
+            help="Investissement brut diminué des aides ou subventions saisies.",
+        )
+        f3.metric(
+            "Gain net estimé en année 1",
+            f"{format_fr(financial_projection['annual_net_gain_year_1'], 0)} €",
+            help="Économies d'autoconsommation + revenus du surplus - charges annuelles.",
+        )
+        f4.metric(
+            "Temps de retour simple",
+            (
+                f"{format_fr(financial_projection['payback_year'], 1)} ans"
+                if not pd.isna(financial_projection["payback_year"])
+                else "Au-delà de l'horizon"
+            ),
         )
 
-    with st.expander("🧭 Prochaines étapes recommandées"):
-        for step_number, step_text in enumerate(
-            business_assistant["next_steps"],
-            start=1,
-        ):
-            st.markdown(f"**{step_number}.** {step_text}")
+        f5, f6, f7, f8 = st.columns(4)
 
-    f1, f2, f3, f4 = st.columns(4)
-
-    f1.metric(
-        "Investissement brut",
-        f"{format_fr(investment_data['gross_total'], 0)} € HT",
-        help="Somme des équipements, fixation, études, toiture, raccordement et autres coûts.",
-    )
-    f2.metric(
-        "Investissement net",
-        f"{format_fr(investment_data['net_total'], 0)} € HT",
-        help="Investissement brut diminué des aides ou subventions saisies.",
-    )
-    f3.metric(
-        "Gain net estimé en année 1",
-        f"{format_fr(financial_projection['annual_net_gain_year_1'], 0)} €",
-        help="Économies d'autoconsommation + revenus du surplus - charges annuelles.",
-    )
-    f4.metric(
-        "Temps de retour simple",
-        (
-            f"{format_fr(financial_projection['payback_year'], 1)} ans"
-            if not pd.isna(financial_projection["payback_year"])
-            else "Au-delà de l'horizon"
-        ),
-    )
-
-    f5, f6, f7, f8 = st.columns(4)
-
-    f5.metric(
-        f"VAN à {financial_horizon_years} ans",
-        f"{format_fr(financial_projection['npv'], 0)} €",
-        help="Valeur actuelle nette calculée avec le taux d'actualisation renseigné.",
-    )
-    f6.metric(
-        "TRI estimé",
-        (
-            f"{format_fr(financial_projection['irr'] * 100, 1)} %"
-            if not pd.isna(financial_projection["irr"])
-            else "Non calculable"
-        ),
-    )
-    f7.metric(
-        f"Gain net cumulé à {financial_horizon_years} ans",
-        f"{format_fr(financial_projection['total_net_gain'], 0)} €",
-    )
-    f8.metric(
-        "Charges annuelles initiales",
-        f"{format_fr(operating_cost_data['total'], 0)} € / an",
-    )
-
-    st.subheader("Décomposition de l'investissement")
-
-    investment_breakdown = pd.DataFrame(
-        {
-            "Poste": [
-                "Modules, onduleur, câblage et pose",
-                "Système de fixation",
-                "Surcoût ERP / ICPE",
-                "Étude structure",
-                "Rénovation de couverture",
-                "Désamiantage",
-                "Raccordement",
-                "Autres coûts",
-            ],
-            "Montant_EUR": [
-                investment_data["equipment_cost"],
-                investment_data["fixing_cost"],
-                investment_data["erp_surcharge_cost"],
-                investment_data["structural_study_cost"],
-                investment_data["roof_cost"],
-                investment_data["asbestos_cost"],
-                investment_data["connection_cost"],
-                investment_data["other_investment_costs"],
-            ],
-        }
-    )
-    investment_breakdown = investment_breakdown[
-        investment_breakdown["Montant_EUR"] > 0
-    ]
-
-    # Affichage en pleine largeur : plus robuste que deux colonnes lorsque
-    # le navigateur applique un zoom ou que la fenêtre est étroite.
-    chart_height = max(
-        380,
-        105 + 58 * len(investment_breakdown),
-    )
-
-    fig_investment = px.bar(
-        investment_breakdown,
-        x="Montant_EUR",
-        y="Poste",
-        orientation="h",
-        text_auto=".0f",
-        title="Répartition du coût d'investissement",
-        labels={
-            "Montant_EUR": "Montant (€ HT)",
-            "Poste": "",
-        },
-    )
-    fig_investment.update_traces(
-        texttemplate="%{x:,.0f} €",
-        textposition="outside",
-        cliponaxis=False,
-    )
-    fig_investment.update_layout(
-        height=chart_height,
-        margin=dict(
-            l=210,
-            r=110,
-            t=75,
-            b=65,
-        ),
-        yaxis=dict(
-            automargin=True,
-            categoryorder="total ascending",
-        ),
-        xaxis=dict(
-            automargin=True,
-            rangemode="tozero",
-        ),
-    )
-
-    st.plotly_chart(
-        fig_investment,
-        use_container_width=True,
-    )
-
-    investment_table = investment_breakdown.copy()
-    investment_table.columns = ["Poste", "Montant (€ HT)"]
-    total_row = pd.DataFrame(
-        {
-            "Poste": [
-                "TOTAL BRUT",
-                "Aides déduites",
-                "TOTAL NET",
-            ],
-            "Montant (€ HT)": [
-                investment_data["gross_total"],
-                -investment_data["grant_amount"],
-                investment_data["net_total"],
-            ],
-        }
-    )
-    investment_table = pd.concat(
-        [investment_table, total_row],
-        ignore_index=True,
-    )
-
-    st.dataframe(
-        investment_table.style.format(
-            {"Montant (€ HT)": "{:,.0f} €"}
-        ),
-        use_container_width=True,
-        hide_index=True,
-        height=min(
-            520,
-            42 + 35 * len(investment_table),
-        ),
-    )
-
-    # Séparation explicite pour empêcher tout chevauchement avec le bloc suivant.
-    st.markdown(
-        '<div style="height:22px"></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Raccordement indicatif")
-
-    connection_table = pd.DataFrame(
-        {
-            "Poste": [
-                "Ouvrages publics avant réfaction",
-                "Réfaction Enedis estimative",
-                "Ouvrages publics après réfaction",
-                "Tranchée privée",
-                "Poste privé HTA/BT",
-                "Cellule de découplage",
-                "Total raccordement",
-            ],
-            "Montant (€ HT)": [
-                connection_data["public_gross"],
-                -connection_data["enedis_reduction"],
-                connection_data["public_net"],
-                connection_data["private_trench"],
-                connection_data["private_post"],
-                connection_data["decoupling_cell"],
-                connection_data["total"],
-            ],
-        }
-    )
-
-    st.dataframe(
-        connection_table.style.format(
-            {"Montant (€ HT)": "{:,.0f} €"}
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.subheader("Valorisation annuelle de l'énergie")
-
-    e1, e2, e3, e4 = st.columns(4)
-
-    e1.metric(
-        "Facture annuelle de référence",
-        f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HT",
-        help="Estimation annualisée à partir de la courbe de charge et des prix saisis, part fixe incluse.",
-    )
-    e2.metric(
-        "Économie d'autoconsommation",
-        f"{format_fr(energy_value_data['annual_self_consumption_saving'], 0)} € / an",
-    )
-    e3.metric(
-        "Revenu du surplus",
-        f"{format_fr(energy_value_data['annual_surplus_revenue'], 0)} € / an",
-    )
-    e4.metric(
-        "Charges annuelles",
-        f"{format_fr(operating_cost_data['total'], 0)} € / an",
-    )
-
-    operating_table = pd.DataFrame(
-        {
-            "Charge annuelle": [
-                "Assurance",
-                "Suivi et maintenance",
-                "Provision onduleurs",
-                "TURPE",
-                "IFER",
-                "Autres charges",
-                "TOTAL",
-            ],
-            "Montant (€ HT/an)": [
-                operating_cost_data["insurance"],
-                operating_cost_data["maintenance"],
-                operating_cost_data["inverter_provision"],
-                operating_cost_data["turpe"],
-                operating_cost_data["ifer"],
-                operating_cost_data["other"],
-                operating_cost_data["total"],
-            ],
-        }
-    )
-
-    st.dataframe(
-        operating_table.style.format(
-            {"Montant (€ HT/an)": "{:,.0f} €"}
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.subheader("Projection sur la durée du projet")
-
-    projection_df = financial_projection["table"].copy()
-
-    fig_cashflow = go.Figure()
-    fig_cashflow.add_trace(
-        go.Bar(
-            x=projection_df["Année"],
-            y=projection_df["Flux net (€)"],
-            name="Flux net annuel",
+        f5.metric(
+            f"VAN à {financial_horizon_years} ans",
+            f"{format_fr(financial_projection['npv'], 0)} €",
+            help="Valeur actuelle nette calculée avec le taux d'actualisation renseigné.",
         )
-    )
-    fig_cashflow.add_trace(
-        go.Scatter(
-            x=projection_df["Année"],
-            y=projection_df["Cumul net (€)"],
-            name="Cumul net",
-            mode="lines+markers",
-            yaxis="y2",
+        f6.metric(
+            "TRI estimé",
+            (
+                f"{format_fr(financial_projection['irr'] * 100, 1)} %"
+                if not pd.isna(financial_projection["irr"])
+                else "Non calculable"
+            ),
         )
-    )
-    fig_cashflow.add_hline(
-        y=0,
-        line_dash="dash",
-    )
-    fig_cashflow.update_layout(
-        title="Flux financiers et cumul du projet",
-        xaxis_title="Année",
-        yaxis_title="Flux annuel (€)",
-        yaxis2=dict(
-            title="Cumul (€)",
-            overlaying="y",
-            side="right",
-            showgrid=False,
-        ),
-        legend=dict(orientation="h"),
-    )
-    st.plotly_chart(fig_cashflow, use_container_width=True)
+        f7.metric(
+            f"Gain net cumulé à {financial_horizon_years} ans",
+            f"{format_fr(financial_projection['total_net_gain'], 0)} €",
+        )
+        f8.metric(
+            "Charges annuelles initiales",
+            f"{format_fr(operating_cost_data['total'], 0)} € / an",
+        )
 
-    with st.expander("Afficher le détail annuel"):
+        st.subheader("Décomposition de l'investissement")
+
+        investment_breakdown = pd.DataFrame(
+            {
+                "Poste": [
+                    "Modules, onduleur, câblage et pose",
+                    "Système de fixation",
+                    "Surcoût ERP / ICPE",
+                    "Étude structure",
+                    "Rénovation de couverture",
+                    "Désamiantage",
+                    "Raccordement",
+                    "Autres coûts",
+                ],
+                "Montant_EUR": [
+                    investment_data["equipment_cost"],
+                    investment_data["fixing_cost"],
+                    investment_data["erp_surcharge_cost"],
+                    investment_data["structural_study_cost"],
+                    investment_data["roof_cost"],
+                    investment_data["asbestos_cost"],
+                    investment_data["connection_cost"],
+                    investment_data["other_investment_costs"],
+                ],
+            }
+        )
+        investment_breakdown = investment_breakdown[
+            investment_breakdown["Montant_EUR"] > 0
+        ]
+
+        # Affichage en pleine largeur : plus robuste que deux colonnes lorsque
+        # le navigateur applique un zoom ou que la fenêtre est étroite.
+        chart_height = max(
+            380,
+            105 + 58 * len(investment_breakdown),
+        )
+
+        fig_investment = px.bar(
+            investment_breakdown,
+            x="Montant_EUR",
+            y="Poste",
+            orientation="h",
+            text_auto=".0f",
+            title="Répartition du coût d'investissement",
+            labels={
+                "Montant_EUR": "Montant (€ HT)",
+                "Poste": "",
+            },
+        )
+        fig_investment.update_traces(
+            texttemplate="%{x:,.0f} €",
+            textposition="outside",
+            cliponaxis=False,
+        )
+        fig_investment.update_layout(
+            height=chart_height,
+            margin=dict(
+                l=210,
+                r=110,
+                t=75,
+                b=65,
+            ),
+            yaxis=dict(
+                automargin=True,
+                categoryorder="total ascending",
+            ),
+            xaxis=dict(
+                automargin=True,
+                rangemode="tozero",
+            ),
+        )
+
+        st.plotly_chart(
+            fig_investment,
+            use_container_width=True,
+        )
+
+        investment_table = investment_breakdown.copy()
+        investment_table.columns = ["Poste", "Montant (€ HT)"]
+        total_row = pd.DataFrame(
+            {
+                "Poste": [
+                    "TOTAL BRUT",
+                    "Aides déduites",
+                    "TOTAL NET",
+                ],
+                "Montant (€ HT)": [
+                    investment_data["gross_total"],
+                    -investment_data["grant_amount"],
+                    investment_data["net_total"],
+                ],
+            }
+        )
+        investment_table = pd.concat(
+            [investment_table, total_row],
+            ignore_index=True,
+        )
+
         st.dataframe(
-            projection_df.style.format(
-                {
-                    "Économie autoconsommation (€)": "{:,.0f}",
-                    "Revenu surplus (€)": "{:,.0f}",
-                    "Charges annuelles (€)": "{:,.0f}",
-                    "Flux net (€)": "{:,.0f}",
-                    "Flux actualisé (€)": "{:,.0f}",
-                    "Cumul net (€)": "{:,.0f}",
-                    "Cumul actualisé (€)": "{:,.0f}",
-                }
+            investment_table.style.format(
+                {"Montant (€ HT)": "{:,.0f} €"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+            height=min(
+                520,
+                42 + 35 * len(investment_table),
+            ),
+        )
+
+        # Séparation explicite pour empêcher tout chevauchement avec le bloc suivant.
+        st.markdown(
+            '<div style="height:22px"></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.subheader("Raccordement indicatif")
+
+        connection_table = pd.DataFrame(
+            {
+                "Poste": [
+                    "Ouvrages publics avant réfaction",
+                    "Réfaction Enedis estimative",
+                    "Ouvrages publics après réfaction",
+                    "Tranchée privée",
+                    "Poste privé HTA/BT",
+                    "Cellule de découplage",
+                    "Total raccordement",
+                ],
+                "Montant (€ HT)": [
+                    connection_data["public_gross"],
+                    -connection_data["enedis_reduction"],
+                    connection_data["public_net"],
+                    connection_data["private_trench"],
+                    connection_data["private_post"],
+                    connection_data["decoupling_cell"],
+                    connection_data["total"],
+                ],
+            }
+        )
+
+        st.dataframe(
+            connection_table.style.format(
+                {"Montant (€ HT)": "{:,.0f} €"}
             ),
             use_container_width=True,
             hide_index=True,
         )
 
-    st.subheader("Hypothèses utilisées")
+        st.subheader("Valorisation annuelle de l'énergie")
 
-    hypothesis_table = pd.DataFrame(
-        {
-            "Hypothèse": [
-                "Type de tarif électrique",
-                "Prix de vente du surplus",
-                "Puissance étudiée",
-                "Fixation",
-                "Coût équipements et pose",
-                "Coût fixation",
-                "Durée de projection",
-                "Hausse prix électricité",
-                "Dégradation production",
-                "Taux d'actualisation",
-            ],
-            "Valeur": [
-                electricity_tariff_type,
-                f"{surplus_sale_price_eur_kwh:.4f} €/kWh HT",
-                f"{pv_peak_kwp:g} kWc",
-                fixing_type,
-                f"{investment_data['equipment_rate']:.2f} €/Wc",
-                f"{investment_data['fixing_rate']:.2f} €/Wc",
-                f"{financial_horizon_years} ans",
-                f"{electricity_price_increase_percent:.1f} %/an",
-                f"{production_degradation_percent:.1f} %/an",
-                f"{discount_rate_percent:.1f} %",
-            ],
-        }
-    )
-    st.dataframe(
-        hypothesis_table,
-        use_container_width=True,
-        hide_index=True,
-    )
+        e1, e2, e3, e4 = st.columns(4)
+
+        e1.metric(
+            "Facture annuelle de référence",
+            f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HT",
+            help="Estimation annualisée à partir de la courbe de charge et des prix saisis, part fixe incluse.",
+        )
+        e2.metric(
+            "Économie d'autoconsommation",
+            f"{format_fr(energy_value_data['annual_self_consumption_saving'], 0)} € / an",
+        )
+        e3.metric(
+            "Revenu du surplus",
+            f"{format_fr(energy_value_data['annual_surplus_revenue'], 0)} € / an",
+        )
+        e4.metric(
+            "Charges annuelles",
+            f"{format_fr(operating_cost_data['total'], 0)} € / an",
+        )
+
+        operating_table = pd.DataFrame(
+            {
+                "Charge annuelle": [
+                    "Assurance",
+                    "Suivi et maintenance",
+                    "Provision onduleurs",
+                    "TURPE",
+                    "IFER",
+                    "Autres charges",
+                    "TOTAL",
+                ],
+                "Montant (€ HT/an)": [
+                    operating_cost_data["insurance"],
+                    operating_cost_data["maintenance"],
+                    operating_cost_data["inverter_provision"],
+                    operating_cost_data["turpe"],
+                    operating_cost_data["ifer"],
+                    operating_cost_data["other"],
+                    operating_cost_data["total"],
+                ],
+            }
+        )
+
+        st.dataframe(
+            operating_table.style.format(
+                {"Montant (€ HT/an)": "{:,.0f} €"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.subheader("Projection sur la durée du projet")
+
+        projection_df = financial_projection["table"].copy()
+
+        fig_cashflow = go.Figure()
+        fig_cashflow.add_trace(
+            go.Bar(
+                x=projection_df["Année"],
+                y=projection_df["Flux net (€)"],
+                name="Flux net annuel",
+            )
+        )
+        fig_cashflow.add_trace(
+            go.Scatter(
+                x=projection_df["Année"],
+                y=projection_df["Cumul net (€)"],
+                name="Cumul net",
+                mode="lines+markers",
+                yaxis="y2",
+            )
+        )
+        fig_cashflow.add_hline(
+            y=0,
+            line_dash="dash",
+        )
+        fig_cashflow.update_layout(
+            title="Flux financiers et cumul du projet",
+            xaxis_title="Année",
+            yaxis_title="Flux annuel (€)",
+            yaxis2=dict(
+                title="Cumul (€)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+            ),
+            legend=dict(orientation="h"),
+        )
+        st.plotly_chart(fig_cashflow, use_container_width=True)
+
+        with st.expander("Afficher le détail annuel"):
+            st.dataframe(
+                projection_df.style.format(
+                    {
+                        "Économie autoconsommation (€)": "{:,.0f}",
+                        "Revenu surplus (€)": "{:,.0f}",
+                        "Charges annuelles (€)": "{:,.0f}",
+                        "Flux net (€)": "{:,.0f}",
+                        "Flux actualisé (€)": "{:,.0f}",
+                        "Cumul net (€)": "{:,.0f}",
+                        "Cumul actualisé (€)": "{:,.0f}",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.subheader("Hypothèses utilisées")
+
+        hypothesis_table = pd.DataFrame(
+            {
+                "Hypothèse": [
+                    "Type de tarif électrique",
+                    "Prix de vente du surplus",
+                    "Puissance étudiée",
+                    "Fixation",
+                    "Coût équipements et pose",
+                    "Coût fixation",
+                    "Durée de projection",
+                    "Hausse prix électricité",
+                    "Dégradation production",
+                    "Taux d'actualisation",
+                ],
+                "Valeur": [
+                    electricity_tariff_type,
+                    f"{surplus_sale_price_eur_kwh:.4f} €/kWh HT",
+                    f"{pv_peak_kwp:g} kWc",
+                    fixing_type,
+                    f"{investment_data['equipment_rate']:.2f} €/Wc",
+                    f"{investment_data['fixing_rate']:.2f} €/Wc",
+                    f"{financial_horizon_years} ans",
+                    f"{electricity_price_increase_percent:.1f} %/an",
+                    f"{production_degradation_percent:.1f} %/an",
+                    f"{discount_rate_percent:.1f} %",
+                ],
+            }
+        )
+        st.dataframe(
+            hypothesis_table,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
-# ============================================================
-# PROFILS HORAIRES
-# ============================================================
+    # ============================================================
+    # PROFILS HORAIRES
+    # ============================================================
 
 with tab_profiles:
     st.subheader(
@@ -9363,10 +9390,13 @@ with tab_daily:
         daily_df["Année"].unique().tolist()
     )
 
+    if st.session_state.get("calendar_year") not in calendar_years:
+        st.session_state.pop("calendar_year", None)
     calendar_year = st.selectbox(
         "Année du calendrier thermique",
         calendar_years,
         index=len(calendar_years) - 1,
+        key="calendar_year",
     )
 
     calendar_matrix = build_daily_calendar(
@@ -9526,3 +9556,7 @@ with tab_quality:
 # EXPORT
 # ============================================================
 
+
+
+# Render after all widgets so this download captures their latest values.
+render_dossier_download()
