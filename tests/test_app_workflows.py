@@ -14,7 +14,7 @@ from dossiers import decode_dossier, encode_dossier
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "app.py").read_text() + '''
 st.session_state["_test_result"] = dict(
-    energy_pdf=energy_pdf_bytes, pv_pdf=pdf_report_bytes, excel=excel_bytes,
+    energy_pdf=globals().get("energy_pdf_bytes"), pv_pdf=globals().get("pdf_report_bytes"), excel=globals().get("excel_bytes"),
     variable=tariff_variable_cost_eur, fixed=tariff_fixed_cost_eur,
     total=total_kwh, tariff=tariff_summary_df.to_dict("records"))
 '''
@@ -32,6 +32,7 @@ def pma_file():
 
 def launch(fields=None, files=None):
     at = AppTest.from_string(APP, default_timeout=90)
+    at.session_state["_workspace_page"] = "Rapport"
     at.session_state["_pending_dossier"] = decode_dossier(encode_dossier(fields or {}, files or {"curve": curve_file()}))
     return at.run()
 
@@ -127,6 +128,7 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
     get.reset_mock(side_effect=True)
     get.side_effect = AssertionError("Le profil sauvegardé doit être réutilisé")
     fresh = AppTest.from_string(APP, default_timeout=90)
+    fresh.session_state["_workspace_page"] = "Rapport"
     fresh.session_state["_pending_dossier"] = restored
     fresh.run()
     assert_ok(fresh)
@@ -149,6 +151,7 @@ def test_loading_another_dossier_clears_old_sources_and_notes():
     at = launch({"note_context": "Note du premier dossier", "company_name": "Premier"},
                 {"curve": curve_file(), "pma": pma_file()})
     assert_ok(at)
+    at.session_state["_workspace_page"] = "Rapport"
     at.session_state["_pending_dossier"] = decode_dossier(encode_dossier({"company_name": "Second"}, {"curve": curve_file()}))
     at.run()
     assert_ok(at)
@@ -171,3 +174,25 @@ def test_pma_only_dossier_can_be_saved(monkeypatch):
     assert_ok(at)
     assert at.number_input(key="pma_subscribed_kva").value == 42.0
     assert decode_dossier(captured[-1])["files"] == {"pma": pma_file()}
+
+
+def test_navigation_preserves_notes_and_settings(monkeypatch):
+    monkeypatch.setattr("requests.get", Mock(side_effect=AssertionError("Offline")))
+    at = launch({"company_name": "Navigation", "unique_electricity_price": 0.31})
+    assert_ok(at)
+    at.radio(key="_workspace_page").set_value("Analyse").run()
+    assert_ok(at)
+    assert any("00h" in m.value and "23h" in m.value for m in at.markdown)
+    at.text_area(key="note_profile").set_value("NOTE_NAVIGATION : vérifier les horaires.").run()
+    at.button(key="prepare_report").click().run()
+    assert_ok(at)
+    assert at.text_area(key="note_profile").value.startswith("NOTE_NAVIGATION")
+    text = "\n".join(p.extract_text() for p in PdfReader(BytesIO(at.session_state["_test_result"]["energy_pdf"])).pages)
+    assert "NOTE_NAVIGATION" in text
+    at.radio(key="_workspace_page").set_value("Dossier").run()
+    assert_ok(at)
+    assert at.text_input(key="company_name").value == "Navigation"
+    at.radio(key="_workspace_page").set_value("Analyse").run()
+    assert_ok(at)
+    assert at.text_area(key="note_profile").value.startswith("NOTE_NAVIGATION")
+    assert at.session_state["unique_electricity_price"] == 0.31

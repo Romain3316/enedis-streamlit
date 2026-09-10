@@ -1,3 +1,11 @@
+# Version 24 — 10 septembre 2026
+
+- Nouvelle organisation en trois pages : Dossier, Analyse et Rapport. Sauvegarde du dossier et préparation du rapport accessibles en haut de page.
+- Interface allégée, logo CMA original et charte bleu marine/rouge conservés. Indicateurs de synthèse regroupés et paramètres accessibles depuis le dossier.
+- Profils : matrice complète des 24 heures, courbe semaine/week-end et annotations à proximité. Les cartes détaillées restent disponibles dans un volet dépliable.
+- Palette historique vert/jaune/rouge partagée entre tableaux, cartes thermiques, PDF et exports de matrice. Les PDF énergie et photovoltaïque colorent désormais leurs cellules avec les mêmes valeurs non arrondies.
+- Conservation des dossiers V23 et des notes lors des changements de page. Vérification automatisée du parcours Analyse → Rapport → Dossier, en complément des tests de restauration, tarifs et photovoltaïque.
+
 # Version 23 — 10 septembre 2026
 
 Le conseiller peut reprendre une analyse complète dans une nouvelle session et préparer un rapport énergétique sans configurer de projet solaire.

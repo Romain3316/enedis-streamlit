@@ -71,9 +71,10 @@ def source_uploader(role, label, extensions, help_text):
     return source_from_record(record)
 
 
-def render_dossier_download():
-    with st.sidebar:
-        st.markdown("### Sauvegarder le dossier")
+def render_dossier_download(target=None):
+    with (target if target is not None else st.sidebar):
+        if target is None:
+            st.markdown("### Sauvegarder le dossier")
         fields = {key: st.session_state[key] for key in SETTINGS if key in st.session_state}
         # The selected geocoded location becomes portable manual coordinates.
         location = st.session_state.get("_resolved_location")
@@ -85,6 +86,7 @@ def render_dossier_download():
             st.error(f"Sauvegarde impossible : {exc}")
             return
         name = ''.join(c if c.isalnum() or c in '-_' else '_' for c in fields.get('company_name', 'entreprise')) or 'entreprise'
-        st.download_button("Sauvegarder le dossier complet (.json)", data=data,
+        st.download_button("Sauvegarder le dossier", data=data,
             file_name=f"dossier_analyse_energetique_{name}.json", mime="application/json", key="save_complete_dossier", use_container_width=True)
-        st.caption("Conserve les fichiers de consommation et PMA, les paramètres, les notes et le profil PVGIS déjà obtenu. Téléchargez à nouveau le dossier après vos modifications.")
+        if target is None:
+            st.caption("Conserve les fichiers, les paramètres et les notes. Téléchargez une nouvelle copie après vos modifications.")
