@@ -1,3 +1,10 @@
+# Version 25 — 10 septembre 2026
+
+- Suppression du menu « Espace de travail » : l’analyse s’ouvre directement, les informations et paramètres du dossier restent dans le panneau latéral.
+- Le bouton « Préparer le rapport » ouvre les exports et annotations ; « Retour à l’analyse » permet de revenir aux résultats.
+- Le choix exclusif « Parcours » devient « Ajouter une étude photovoltaïque ». Les onglets énergie restent disponibles lorsque le complément solaire est activé.
+- Compatibilité des dossiers existants et conservation des paramètres solaires et annotations lors des changements d’affichage.
+
 # Version 24 — 10 septembre 2026
 
 - Nouvelle organisation en trois pages : Dossier, Analyse et Rapport. Sauvegarde du dossier et préparation du rapport accessibles en haut de page.

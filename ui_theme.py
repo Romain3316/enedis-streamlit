@@ -68,6 +68,16 @@ def open_report():
     st.session_state['_workspace_page'] = 'Rapport'
 
 
+def open_analysis():
+    st.session_state['_workspace_page'] = 'Analyse'
+
+
+def update_solar_option():
+    st.session_state['analysis_mode'] = (
+        'Opportunité photovoltaïque' if st.session_state['_include_pv'] else 'Analyse énergétique'
+    )
+
+
 def render_profile_matrix(matrix):
     from heatmap_colors import style_matrix
     display = matrix.rename(index=lambda h: f"{int(h):02d}h")

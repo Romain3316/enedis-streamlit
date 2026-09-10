@@ -115,7 +115,7 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
         out = Path(os.environ["QA_PDF_DIR"]); out.mkdir(parents=True, exist_ok=True)
         (out / "energie.pdf").write_bytes(first["energy_pdf"])
         (out / "photovoltaique.pdf").write_bytes(first["pv_pdf"])
-    at.radio(key="analysis_mode").set_value("Analyse énergétique").run()
+    at.checkbox(key="_include_pv").uncheck().run()
     assert_ok(at)
     at.radio(key="hc_range_count").set_value(1).run()
     assert_ok(at)
@@ -132,7 +132,7 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
     fresh.session_state["_pending_dossier"] = restored
     fresh.run()
     assert_ok(fresh)
-    fresh.radio(key="analysis_mode").set_value("Opportunité photovoltaïque").run()
+    fresh.checkbox(key="_include_pv").check().run()
     assert_ok(fresh)
     fresh.radio(key="hc_range_count").set_value(2).run()
     assert_ok(fresh)
@@ -180,7 +180,7 @@ def test_navigation_preserves_notes_and_settings(monkeypatch):
     monkeypatch.setattr("requests.get", Mock(side_effect=AssertionError("Offline")))
     at = launch({"company_name": "Navigation", "unique_electricity_price": 0.31})
     assert_ok(at)
-    at.radio(key="_workspace_page").set_value("Analyse").run()
+    at.button(key="back_to_analysis").click().run()
     assert_ok(at)
     assert any("00h" in m.value and "23h" in m.value for m in at.markdown)
     at.text_area(key="note_profile").set_value("NOTE_NAVIGATION : vérifier les horaires.").run()
@@ -189,10 +189,26 @@ def test_navigation_preserves_notes_and_settings(monkeypatch):
     assert at.text_area(key="note_profile").value.startswith("NOTE_NAVIGATION")
     text = "\n".join(p.extract_text() for p in PdfReader(BytesIO(at.session_state["_test_result"]["energy_pdf"])).pages)
     assert "NOTE_NAVIGATION" in text
-    at.radio(key="_workspace_page").set_value("Dossier").run()
-    assert_ok(at)
     assert at.text_input(key="company_name").value == "Navigation"
-    at.radio(key="_workspace_page").set_value("Analyse").run()
+    at.button(key="back_to_analysis").click().run()
     assert_ok(at)
     assert at.text_area(key="note_profile").value.startswith("NOTE_NAVIGATION")
     assert at.session_state["unique_electricity_price"] == 0.31
+
+
+def test_solar_is_additive_and_saved_dossiers_restore_the_option(monkeypatch):
+    monkeypatch.setattr("requests.get", Mock(return_value=solar_response()))
+    at = launch({"analysis_mode": "Opportunité photovoltaïque", "manual_coordinates": True})
+    assert_ok(at)
+    assert at.checkbox(key="_include_pv").value is True
+    at.button(key="back_to_analysis").click().run()
+    assert_ok(at)
+    core = {"Vue d’ensemble", "Profils", "Puissance", "Tarification", "Détail journalier", "Qualité des données"}
+    assert core | {"Production solaire", "Simulation financière"} == {t.label for t in at.tabs}
+    assert not any(r.label in {"Navigation", "Parcours"} for r in at.radio)
+    at.checkbox(key="_include_pv").uncheck().run()
+    assert_ok(at)
+    assert {t.label for t in at.tabs} == core
+    at.checkbox(key="_include_pv").check().run()
+    assert_ok(at)
+    assert core | {"Production solaire", "Simulation financière"} == {t.label for t in at.tabs}

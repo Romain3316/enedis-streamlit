@@ -1,5 +1,5 @@
 import base64
-from ui_theme import apply_theme, compact_header, dossier_summary, heat_legend, open_report, render_profile_matrix
+from ui_theme import apply_theme, compact_header, dossier_summary, heat_legend, open_report, open_analysis, update_solar_option, render_profile_matrix
 from heatmap_colors import style_matrix, pdf_cell_styles, cell_color, bounds, COLOR_SCALE
 import json
 from dossier_schema import SETTINGS, PV_KEYS
@@ -5388,29 +5388,38 @@ def render_pma_analysis(pma_uploaded_file) -> None:
 
 initialize_dossier()
 apply_theme()
+# Only the report is a separate view; obsolete V24 navigation returns to analysis.
+workspace_page = st.session_state.get("_workspace_page", "Analyse")
+if workspace_page not in ("Analyse", "Rapport"):
+    workspace_page = "Analyse"
+st.session_state["_workspace_page"] = workspace_page
 brand_col, save_col, report_col = st.columns([5, 2, 2])
 with brand_col:
     compact_header()
 with save_col:
     header_save = st.container()
 with report_col:
-    st.button("Préparer le rapport", key="prepare_report", type="primary", use_container_width=True,
-              on_click=open_report, disabled=not st.session_state.get("_source_files", {}).get("curve"))
+    if workspace_page == "Rapport":
+        st.button("← Retour à l’analyse", key="back_to_analysis", use_container_width=True,
+                  on_click=open_analysis)
+    else:
+        st.button("Préparer le rapport", key="prepare_report", type="primary", use_container_width=True,
+                  on_click=open_report, disabled=not st.session_state.get("_source_files", {}).get("curve"))
 
 with st.sidebar:
-    st.caption("ESPACE DE TRAVAIL")
-    workspace_page = st.radio("Navigation", ["Dossier", "Analyse", "Rapport"], index=1,
-                              key="_workspace_page", label_visibility="collapsed")
-    st.markdown("---")
-    analysis_mode = st.radio("Parcours", ["Analyse énergétique", "Opportunité photovoltaïque"], key="analysis_mode")
-    pv_enabled = analysis_mode == "Opportunité photovoltaïque"
+    st.markdown("### Analyse énergétique")
+    st.caption("Consommations, profils, puissances et tarifs.")
+    # Keep the canonical saved field for compatibility with existing dossiers.
+    st.session_state["_include_pv"] = st.session_state.get("analysis_mode") == "Opportunité photovoltaïque"
+    pv_enabled = st.checkbox("Ajouter une étude photovoltaïque", key="_include_pv", on_change=update_solar_option)
+    st.caption("Complète l’analyse énergétique avec la production solaire, l’autoconsommation et la rentabilité.")
     dossier_summary()
-    with st.expander("Importer / reprendre un dossier", expanded=workspace_page == "Dossier" or not st.session_state.get("_source_files")):
+    with st.expander("Importer / reprendre un dossier", expanded=not st.session_state.get("_source_files")):
         uploaded_file = source_uploader("curve", "Courbe de charge Enedis ou GEREDIS", ["csv", "xlsx", "xls", "txt"],
             "Enedis : CSV/Excel avec Horodate et Valeur. GEREDIS : six valeurs de 10 minutes par ligne.")
         pma_uploaded_file = source_uploader("pma", "Puissances maximales (PMA)", ["csv", "xlsx", "xls"], "PMA et phases PMA1, PMA2, PMA3.")
         render_dossier_loader()
-    st.caption("V24 · Charte CMA")
+    st.caption("V25 · Charte CMA")
 
 
 if uploaded_file is None:
@@ -5445,10 +5454,10 @@ if uploaded_file is None:
             </div>
             <div class="feature-card">
                 <div class="feature-icon">☀️</div>
-                <h3>Photovoltaïque</h3>
+                <h3>Complément photovoltaïque</h3>
                 <p>
-                    Lorsque la courbe de charge est disponible, évaluez
-                    l'adéquation avec une production photovoltaïque.
+                    Ajoutez une étude solaire à votre analyse énergétique :
+                    production, autoconsommation et rentabilité.
                 </p>
             </div>
         </div>
@@ -5492,12 +5501,7 @@ pv_aspect = 0
 if st.session_state.get("selected_year") not in available_years:
     st.session_state.pop("selected_year", None)
 
-if workspace_page == "Dossier":
-    st.markdown("## Paramètres du dossier")
-    st.caption("Renseignez l'entreprise, choisissez la période et ajustez les hypothèses de l'analyse.")
-    dossier_panel = st.container()
-else:
-    dossier_panel = st.sidebar.expander("Modifier les paramètres", expanded=False)
+dossier_panel = st.sidebar.expander("Informations et paramètres du dossier", expanded=False)
 
 with dossier_panel:
     st.markdown("### Période analysée")
@@ -6516,9 +6520,8 @@ atypical_days = atypical_quality_df.set_index("Date")["Nombre_points"]
 # FICHE ENTREPRISE
 # ============================================================
 
-if workspace_page != "Dossier":
-    st.markdown("## " + ("Analyse des consommations" if workspace_page == "Analyse" else "Préparer le rapport"))
-    st.caption(f"{company_name or 'Entreprise non renseignée'} · Du {filtered_df['Horodate_debut'].min():%d/%m/%Y} au {filtered_df['Horodate'].max():%d/%m/%Y}")
+st.markdown("## " + ("Analyse des consommations" if workspace_page == "Analyse" else "Préparer le rapport"))
+st.caption(f"{company_name or 'Entreprise non renseignée'} · Du {filtered_df['Horodate_debut'].min():%d/%m/%Y} au {filtered_df['Horodate'].max():%d/%m/%Y}")
 
 if workspace_page == "Analyse":
     k1,k2,k3,k4 = st.columns(4)
