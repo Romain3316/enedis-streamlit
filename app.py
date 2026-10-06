@@ -1593,9 +1593,8 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
             "Colonne(s) manquante(s) : " + ", ".join(sorted(missing))
         )
 
-    # Sécurité Enedis : le pré-diagnostic énergétique travaille uniquement
-    # sur la puissance/énergie active. Les relevés réactifs (VAr, kVAr,
-    # VArh, kVArh) sont exclus avant tout calcul.
+    # Courbe principale : ne conserver que la puissance/énergie active.
+    # Les grandeurs réactives (VAr, kVAr, VArh, kVArh) sont exclues des calculs.
     if "Unité" in df.columns:
         normalized_units = (
             df["Unité"]
@@ -1607,8 +1606,8 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
         reactive_mask = normalized_units.isin({"VAR", "KVAR", "VARH", "KVARH"})
         df = df.loc[~reactive_mask].copy()
 
-    # Certains exports Enedis distinguent explicitement PA (active) et PRI
-    # (réactive). Si PA est présente, seule cette grandeur alimente le moteur.
+    # Sur les exports Enedis qui distinguent PA (active) et PRI (réactive),
+    # PA est explicitement retenue pour l'analyse principale.
     if "Grandeur physique" in df.columns:
         normalized_grandeur = (
             df["Grandeur physique"]
@@ -1621,7 +1620,7 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
     available_columns = [
         column
-        for column in ["Unité", "Horodate", "Valeur", "Nature", "Pas"]
+        for column in ["Grandeur physique", "Unité", "Horodate", "Valeur", "Nature", "Pas"]
         if column in df.columns
     ]
 
@@ -4331,7 +4330,7 @@ def create_cma_pdf_report(
         [
             Paragraph("Consommation totale", styles["CMA_KPI_Label"]),
             Paragraph("Moyenne par jour", styles["CMA_KPI_Label"]),
-            Paragraph("Pic de puissance", styles["CMA_KPI_Label"]),
+            Paragraph("Puissance moyenne maximale", styles["CMA_KPI_Label"]),
         ],
         [
             Paragraph(
@@ -4671,7 +4670,7 @@ def create_cma_pdf_report(
         [
             Paragraph("Investissement net", styles["CMA_KPI_Label"]),
             Paragraph(
-                f"{format_fr(investment_data['net_total'], 0)} € HT",
+                f"{format_fr(investment_data['net_total'], 0)} € HTVA",
                 styles["CMA_KPI_Value"],
             ),
             Paragraph("Gain net année 1", styles["CMA_KPI_Label"]),
@@ -4848,11 +4847,11 @@ def create_cma_pdf_report(
     assumptions_rows = [
         ["Hypothèse", "Valeur"],
         ["Tarification électrique", safe_pdf_text(electricity_tariff_type)],
-        ["Vente du surplus", f"{format_fr(surplus_sale_price_eur_kwh, 4)} €/kWh HT"],
+        ["Vente du surplus", f"{format_fr(surplus_sale_price_eur_kwh, 4)} €/kWh HTVA"],
         ["Hausse du prix de l'électricité", f"{format_fr(electricity_price_increase_percent, 1)} %/an"],
         ["Dégradation de production", f"{format_fr(production_degradation_percent, 1)} %/an"],
         ["Taux d'actualisation", f"{format_fr(discount_rate_percent, 1)} %"],
-        ["Charges annuelles initiales", f"{format_fr(operating_cost_data['total'], 0)} € HT/an"],
+        ["Charges annuelles initiales", f"{format_fr(operating_cost_data['total'], 0)} € HTVA/an"],
     ]
     assumptions_table = Table(
         assumptions_rows,
@@ -5068,7 +5067,7 @@ def create_energy_prediagnostic_pdf(
     story.append(Paragraph("<b>Important :</b> ce document est une analyse préalable fondée sur la courbe de charge disponible. Il ne constitue pas un audit énergétique réglementaire et doit être complété par la connaissance des équipements, des usages et du fonctionnement de l'entreprise.", styles["EN_Body"])); story.append(PageBreak())
 
     story.append(Paragraph("1. Synthèse énergétique", styles["EN_H1"]))
-    kpis=[[Paragraph(f"{format_fr(total_kwh,0)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(average_daily_kwh,1)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(maximum_power_kw,1)} kW",styles["EN_KPI"])],[Paragraph("Consommation totale",styles["EN_Label"]),Paragraph("Moyenne journalière",styles["EN_Label"]),Paragraph("Pic de puissance moyen sur intervalle",styles["EN_Label"])],[Paragraph(f"{format_fr(tariff_variable_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_fixed_cost_eur,0)} € HT",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_total_cost_eur,0)} € HT",styles["EN_KPI"])],[Paragraph("Part variable estimée",styles["EN_Label"]),Paragraph("Part fixe proratisée",styles["EN_Label"]),Paragraph("Total estimé",styles["EN_Label"])]]
+    kpis=[[Paragraph(f"{format_fr(total_kwh,0)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(average_daily_kwh,1)} kWh",styles["EN_KPI"]),Paragraph(f"{format_fr(maximum_power_kw,1)} kW",styles["EN_KPI"])],[Paragraph("Consommation totale",styles["EN_Label"]),Paragraph("Moyenne journalière",styles["EN_Label"]),Paragraph("Puissance moyenne maximale sur le pas de mesure",styles["EN_Label"])],[Paragraph(f"{format_fr(tariff_variable_cost_eur,0)} € HTVA",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_fixed_cost_eur,0)} € HTVA",styles["EN_KPI"]),Paragraph(f"{format_fr(tariff_total_cost_eur,0)} € HTVA",styles["EN_KPI"])],[Paragraph("Part variable estimée",styles["EN_Label"]),Paragraph("Part fixe proratisée",styles["EN_Label"]),Paragraph("Total estimé",styles["EN_Label"])]]
     kt=Table(kpis,colWidths=[5.25*cm]*3); kt.setStyle(TableStyle([("BOX",(0,0),(-1,-1),.7,colors.HexColor("#DDE4EB")),("INNERGRID",(0,0),(-1,-1),.4,colors.HexColor("#E6EBF0")),("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8)])); story.append(kt); story.append(Spacer(1,.4*cm))
     if report_notes.get("context"): story.append(Paragraph("Contexte connu avant / pendant l'entretien",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["context"]).replace("\n","<br/>"),styles["EN_Body"]))
     if report_notes.get("activity_hours"): story.append(Paragraph("Horaires et organisation de l'activité",styles["EN_H2"])); story.append(Paragraph(safe_pdf_text(report_notes["activity_hours"]).replace("\n","<br/>"),styles["EN_Body"]))
@@ -5836,7 +5835,7 @@ with dossier_panel:
 
     if electricity_tariff_type == "Tarif unique":
         unique_electricity_price = st.number_input(
-            "Prix d'achat de l'électricité (€/kWh HT)",
+            "Prix d'achat de l'électricité (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.1842,
@@ -5850,7 +5849,7 @@ with dossier_panel:
 
         with hp_col:
             hp_electricity_price = st.number_input(
-                "Prix HP (€/kWh HT)",
+                "Prix HP (€/kWh HTVA)",
                 min_value=0.0,
                 max_value=5.0,
                 value=0.20,
@@ -5861,7 +5860,7 @@ with dossier_panel:
 
         with hc_col:
             hc_electricity_price = st.number_input(
-                "Prix HC (€/kWh HT)",
+                "Prix HC (€/kWh HTVA)",
                 min_value=0.0,
                 max_value=5.0,
                 value=0.15,
@@ -5872,7 +5871,7 @@ with dossier_panel:
 
     else:
         hp_winter_electricity_price = st.number_input(
-            "Prix HP hiver (€/kWh HT)",
+            "Prix HP hiver (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.21,
@@ -5881,7 +5880,7 @@ with dossier_panel:
             key="hp_winter_electricity_price",
         )
         hc_winter_electricity_price = st.number_input(
-            "Prix HC hiver (€/kWh HT)",
+            "Prix HC hiver (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.16,
@@ -5890,7 +5889,7 @@ with dossier_panel:
             key="hc_winter_electricity_price",
         )
         hp_summer_electricity_price = st.number_input(
-            "Prix HP été (€/kWh HT)",
+            "Prix HP été (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.18,
@@ -5899,7 +5898,7 @@ with dossier_panel:
             key="hp_summer_electricity_price",
         )
         hc_summer_electricity_price = st.number_input(
-            "Prix HC été (€/kWh HT)",
+            "Prix HC été (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.14,
@@ -5909,7 +5908,7 @@ with dossier_panel:
         )
 
     annual_subscription_eur = st.number_input(
-        "Part fixe annuelle (€ HT)",
+        "Part fixe annuelle (€ HTVA)",
         min_value=0.0,
         max_value=100000.0,
         value=300.0,
@@ -5919,7 +5918,7 @@ with dossier_panel:
 
     if pv_enabled:
         surplus_sale_price_eur_kwh = st.number_input(
-            "Prix de vente du surplus (€/kWh HT)",
+            "Prix de vente du surplus (€/kWh HTVA)",
             min_value=0.0,
             max_value=5.0,
             value=0.0761,
@@ -5952,7 +5951,7 @@ with dossier_panel:
             )
 
             structural_study_cost = st.number_input(
-                "Étude structure charpente/toiture (€ HT)",
+                "Étude structure charpente/toiture (€ HTVA)",
                 min_value=0.0,
                 max_value=100000.0,
                 value=2000.0,
@@ -6052,7 +6051,7 @@ with dossier_panel:
             )
 
             other_investment_costs = st.number_input(
-                "Autres coûts d'investissement (€ HT)",
+                "Autres coûts d'investissement (€ HTVA)",
                 min_value=0.0,
                 max_value=10000000.0,
                 value=0.0,
@@ -6112,7 +6111,7 @@ with dossier_panel:
             )
 
             other_annual_costs = st.number_input(
-                "Autres charges annuelles (€ HT/an)",
+                "Autres charges annuelles (€ HTVA/an)",
                 min_value=0.0,
                 max_value=1000000.0,
                 value=0.0,
@@ -6553,9 +6552,16 @@ if workspace_page == "Analyse":
     k1,k2,k3,k4 = st.columns(4)
     k1.metric("Consommation totale", f"{format_fr(total_kwh,0)} kWh")
     k2.metric("Moyenne journalière", f"{format_fr(average_daily_kwh,1)} kWh")
-    k3.metric("Pic de puissance", f"{format_fr(maximum_power_kw,1)} kW")
-    k4.metric("Coût estimé", f"{format_fr(tariff_total_cost_eur,0)} € HT")
-    st.caption("Montants HT sur la période sélectionnée, part fixe proratisée incluse.")
+    k3.metric("Puissance moyenne maximale", f"{format_fr(maximum_power_kw,1)} kW")
+    measurement_minutes = time_step.total_seconds() / 60
+    measurement_step_label = (
+        f"{int(measurement_minutes)} min"
+        if float(measurement_minutes).is_integer()
+        else f"{format_fr(measurement_minutes, 1)} min"
+    )
+    k3.caption(f"Pas de mesure : {measurement_step_label}")
+    k4.metric("Coût estimé", f"{format_fr(tariff_total_cost_eur,0)} € HTVA")
+    st.caption("Montants HTVA sur la période sélectionnée, part fixe proratisée incluse.")
 
 if workspace_page == "Analyse":
     labels = ["Vue d’ensemble", "Profils", "Puissance", "Tarification", "Détail journalier", "Qualité des données"]
@@ -6602,7 +6608,7 @@ if workspace_page == "Rapport":
                 pe1.metric("Consommation", f"{format_fr(total_kwh, 0)} kWh")
                 pe2.metric("Moyenne / jour", f"{format_fr(average_daily_kwh, 1)} kWh")
                 pe3.metric("Pic observé", f"{format_fr(maximum_power_kw, 1)} kW")
-                pe4.metric("Coût estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HT")
+                pe4.metric("Coût estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HTVA")
 
                 st.markdown("#### Informations à intégrer sous la synthèse")
                 st.text_area(
@@ -6664,25 +6670,25 @@ if workspace_page == "Rapport":
                     "Plage",
                     "Consommation (kWh)",
                     "Part (%)",
-                    "Prix unitaire (€ HT/kWh)",
-                    "Montant (€ HT)",
+                    "Prix unitaire (€ HTVA/kWh)",
+                    "Montant (€ HTVA)",
                 ]
                 st.dataframe(
                     tariff_preview.style.format(
                         {
                             "Consommation (kWh)": "{:.0f}",
                             "Part (%)": "{:.1f}",
-                            "Prix unitaire (€ HT/kWh)": "{:.4f}",
-                            "Montant (€ HT)": "{:.2f}",
+                            "Prix unitaire (€ HTVA/kWh)": "{:.4f}",
+                            "Montant (€ HTVA)": "{:.2f}",
                         }
                     ),
                     use_container_width=True,
                     hide_index=True,
                 )
                 tc1, tc2, tc3 = st.columns(3)
-                tc1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 0)} € HT")
-                tc2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 0)} € HT")
-                tc3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HT")
+                tc1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 0)} € HTVA")
+                tc2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 0)} € HTVA")
+                tc3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 0)} € HTVA")
                 st.text_area(
                     "Commentaire du conseiller sur la tarification",
                     key="note_tariff",
@@ -6860,7 +6866,7 @@ if workspace_page == "Rapport":
                     "Consommation totale (kWh)",
                     "Moyenne journalière (kWh)",
                     "Médiane journalière (kWh)",
-                    "Pic de puissance (kW)",
+                    "Puissance moyenne maximale (kW)",
                     "Adresse de l'entreprise",
                     "Latitude",
                     "Longitude",
@@ -6889,12 +6895,12 @@ if workspace_page == "Rapport":
                     "Part totale HC (%)",
                     "Indice optimisation tarifaire CMA (/100)",
                     "Appréciation indice tarifaire",
-                    "Investissement brut estimé (€ HT)",
-                    "Investissement net estimé (€ HT)",
-                    "Charges annuelles estimées (€ HT/an)",
-                    "Économie autoconsommation annuelle (€ HT)",
-                    "Revenu surplus annuel (€ HT)",
-                    "Gain net année 1 (€ HT)",
+                    "Investissement brut estimé (€ HTVA)",
+                    "Investissement net estimé (€ HTVA)",
+                    "Charges annuelles estimées (€ HTVA/an)",
+                    "Économie autoconsommation annuelle (€ HTVA)",
+                    "Revenu surplus annuel (€ HTVA)",
+                    "Gain net année 1 (€ HTVA)",
                     "Temps de retour simple (années)",
                     "VAN du projet (€)",
                     "TRI estimé (%)",
@@ -7057,7 +7063,7 @@ if workspace_page == "Rapport":
                 "Nom de l'entreprise", "SIRET", "Conseiller CMA", "Date du diagnostic",
                 "Fichier source", "Début de période", "Fin de période", "Pas de temps source",
                 "Pas de temps après traitement", "Unité source", "Consommation totale (kWh)",
-                "Moyenne journalière (kWh)", "Médiane journalière (kWh)", "Pic de puissance (kW)",
+                "Moyenne journalière (kWh)", "Médiane journalière (kWh)", "Puissance moyenne maximale (kW)",
                 "Adresse de l'entreprise", "HP hiver (kWh)", "HC hiver (kWh)", "HP été (kWh)",
                 "HC été (kWh)", "Part totale HP (%)", "Part totale HC (%)",
                 "Indice optimisation tarifaire CMA (/100)", "Appréciation indice tarifaire",
@@ -7066,8 +7072,8 @@ if workspace_page == "Rapport":
             summary_df = summary_df[summary_df["Indicateur"].isin(energy_indicators)].copy()
             summary_df.loc[summary_df["Indicateur"] == "Adresse de l'entreprise", "Valeur"] = company_address
         summary_df = pd.concat([summary_df, pd.DataFrame({
-            "Indicateur": ["Type de tarif", "Part variable sur la période (€ HT)",
-                           "Part fixe proratisée sur la période (€ HT)", "Total sur la période (€ HT)"],
+            "Indicateur": ["Type de tarif", "Part variable sur la période (€ HTVA)",
+                           "Part fixe proratisée sur la période (€ HTVA)", "Total sur la période (€ HTVA)"],
             "Valeur": [electricity_tariff_type, tariff_variable_cost_eur, tariff_fixed_cost_eur, tariff_total_cost_eur],
         })], ignore_index=True)
 
@@ -7236,15 +7242,15 @@ if workspace_page == "Rapport":
                     "Type de fixation",
                     "Coût équipements + pose (€/Wc)",
                     "Coût fixation (€/Wc)",
-                    "Investissement brut (€ HT)",
+                    "Investissement brut (€ HTVA)",
                     "Aides déduites (€)",
-                    "Investissement net (€ HT)",
-                    "Raccordement (€ HT)",
-                    "Charges annuelles (€ HT/an)",
-                    "Facture annuelle de référence (€ HT)",
-                    "Économie autoconsommation (€ HT/an)",
-                    "Revenu surplus (€ HT/an)",
-                    "Gain net année 1 (€ HT)",
+                    "Investissement net (€ HTVA)",
+                    "Raccordement (€ HTVA)",
+                    "Charges annuelles (€ HTVA/an)",
+                    "Facture annuelle de référence (€ HTVA)",
+                    "Économie autoconsommation (€ HTVA/an)",
+                    "Revenu surplus (€ HTVA/an)",
+                    "Gain net année 1 (€ HTVA)",
                     "Temps de retour simple (années)",
                     "VAN (€)",
                     "TRI (%)",
@@ -7538,11 +7544,11 @@ if workspace_page == "Analyse":
                 )
 
         st.markdown("### Coût de l'électricité")
-        st.caption("Montants HT sur la période sélectionnée. La part fixe annuelle est proratisée selon la durée couverte (base 365,25 jours).")
+        st.caption("Montants HTVA sur la période sélectionnée. La part fixe annuelle est proratisée selon la durée couverte (base 365,25 jours).")
         synth_cost1, synth_cost2, synth_cost3 = st.columns(3)
-        synth_cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
-        synth_cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
-        synth_cost3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
+        synth_cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HTVA")
+        synth_cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HTVA")
+        synth_cost3.metric("Total estimé", f"{format_fr(tariff_total_cost_eur, 2)} € HTVA")
 
         chart1, chart2 = st.columns([1.5, 1])
 
@@ -8284,20 +8290,20 @@ if workspace_page == "Analyse":
         tariff_amount_display = tariff_summary_df[
             ["Categorie_tarifaire", "Consommation_kWh", "Prix_unitaire_EUR_kWh_HT", "Montant_EUR_HT"]
         ].copy()
-        tariff_amount_display.columns = ["Plage", "Consommation (kWh)", "Prix unitaire (€/kWh HT)", "Montant (€ HT)"]
+        tariff_amount_display.columns = ["Plage", "Consommation (kWh)", "Prix unitaire (€/kWh HTVA)", "Montant (€ HTVA)"]
         st.dataframe(
             tariff_amount_display.style.format({
                 "Consommation (kWh)": "{:,.0f}",
-                "Prix unitaire (€/kWh HT)": "{:.4f}",
-                "Montant (€ HT)": "{:,.2f}",
+                "Prix unitaire (€/kWh HTVA)": "{:.4f}",
+                "Montant (€ HTVA)": "{:,.2f}",
             }),
             use_container_width=True,
             hide_index=True,
         )
         cost1, cost2, cost3 = st.columns(3)
-        cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HT")
-        cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HT")
-        cost3.metric("Total part fixe + part variable", f"{format_fr(tariff_total_cost_eur, 2)} € HT")
+        cost1.metric("Part variable", f"{format_fr(tariff_variable_cost_eur, 2)} € HTVA")
+        cost2.metric("Part fixe sur la période", f"{format_fr(tariff_fixed_cost_eur, 2)} € HTVA")
+        cost3.metric("Total part fixe + part variable", f"{format_fr(tariff_total_cost_eur, 2)} € HTVA")
 
         if coverage_ratio < 0.95:
             st.info(
@@ -8561,12 +8567,12 @@ if pv_enabled:
 
             f1.metric(
                 "Investissement brut",
-                f"{format_fr(investment_data['gross_total'], 0)} € HT",
+                f"{format_fr(investment_data['gross_total'], 0)} € HTVA",
                 help="Somme des équipements, fixation, études, toiture, raccordement et autres coûts.",
             )
             f2.metric(
                 "Investissement net",
-                f"{format_fr(investment_data['net_total'], 0)} € HT",
+                f"{format_fr(investment_data['net_total'], 0)} € HTVA",
                 help="Investissement brut diminué des aides ou subventions saisies.",
             )
             f3.metric(
@@ -8652,7 +8658,7 @@ if pv_enabled:
                 text_auto=".0f",
                 title="Répartition du coût d'investissement",
                 labels={
-                    "Montant_EUR": "Montant (€ HT)",
+                    "Montant_EUR": "Montant (€ HTVA)",
                     "Poste": "",
                 },
             )
@@ -8685,7 +8691,7 @@ if pv_enabled:
             )
 
             investment_table = investment_breakdown.copy()
-            investment_table.columns = ["Poste", "Montant (€ HT)"]
+            investment_table.columns = ["Poste", "Montant (€ HTVA)"]
             total_row = pd.DataFrame(
                 {
                     "Poste": [
@@ -8693,7 +8699,7 @@ if pv_enabled:
                         "Aides déduites",
                         "TOTAL NET",
                     ],
-                    "Montant (€ HT)": [
+                    "Montant (€ HTVA)": [
                         investment_data["gross_total"],
                         -investment_data["grant_amount"],
                         investment_data["net_total"],
@@ -8707,7 +8713,7 @@ if pv_enabled:
 
             st.dataframe(
                 investment_table.style.format(
-                    {"Montant (€ HT)": "{:,.0f} €"}
+                    {"Montant (€ HTVA)": "{:,.0f} €"}
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -8736,7 +8742,7 @@ if pv_enabled:
                         "Cellule de découplage",
                         "Total raccordement",
                     ],
-                    "Montant (€ HT)": [
+                    "Montant (€ HTVA)": [
                         connection_data["public_gross"],
                         -connection_data["enedis_reduction"],
                         connection_data["public_net"],
@@ -8750,7 +8756,7 @@ if pv_enabled:
 
             st.dataframe(
                 connection_table.style.format(
-                    {"Montant (€ HT)": "{:,.0f} €"}
+                    {"Montant (€ HTVA)": "{:,.0f} €"}
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -8762,7 +8768,7 @@ if pv_enabled:
 
             e1.metric(
                 "Facture annuelle de référence",
-                f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HT",
+                f"{format_fr(energy_value_data['annual_energy_bill'], 0)} € HTVA",
                 help="Estimation annualisée à partir de la courbe de charge et des prix saisis, part fixe incluse.",
             )
             e2.metric(
@@ -8789,7 +8795,7 @@ if pv_enabled:
                         "Autres charges",
                         "TOTAL",
                     ],
-                    "Montant (€ HT/an)": [
+                    "Montant (€ HTVA/an)": [
                         operating_cost_data["insurance"],
                         operating_cost_data["maintenance"],
                         operating_cost_data["inverter_provision"],
@@ -8803,7 +8809,7 @@ if pv_enabled:
 
             st.dataframe(
                 operating_table.style.format(
-                    {"Montant (€ HT/an)": "{:,.0f} €"}
+                    {"Montant (€ HTVA/an)": "{:,.0f} €"}
                 ),
                 use_container_width=True,
                 hide_index=True,
@@ -8883,7 +8889,7 @@ if pv_enabled:
                     ],
                     "Valeur": [
                         electricity_tariff_type,
-                        f"{surplus_sale_price_eur_kwh:.4f} €/kWh HT",
+                        f"{surplus_sale_price_eur_kwh:.4f} €/kWh HTVA",
                         f"{pv_peak_kwp:g} kWc",
                         fixing_type,
                         f"{investment_data['equipment_rate']:.2f} €/Wc",
