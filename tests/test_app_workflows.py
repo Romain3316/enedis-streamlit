@@ -63,7 +63,7 @@ def test_energy_is_offline_and_uses_selected_tariff(monkeypatch, tariff, expecte
     assert "Projection financière" not in workbook.sheet_names
     summary = pd.read_excel(workbook, sheet_name="Synthèse").set_index("Indicateur")["Valeur"]
     assert "Puissance photovoltaïque étudiée (kWc)" not in summary.index
-    assert summary["Total sur la période (€ HT)"] == pytest.approx(expected + 7)
+    assert summary["Total sur la période (€ HTVA)"] == pytest.approx(expected + 7)
 
 
 def solar_response():
@@ -212,3 +212,4 @@ def test_solar_is_additive_and_saved_dossiers_restore_the_option(monkeypatch):
     at.checkbox(key="_include_pv").check().run()
     assert_ok(at)
     assert core | {"Production solaire", "Simulation financière"} == {t.label for t in at.tabs}
+

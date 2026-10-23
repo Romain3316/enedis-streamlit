@@ -1330,6 +1330,32 @@ def render_header() -> None:
     )
 
 
+def normalize_enedis_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Reconnaît aussi les en-têtes réencodés et les exports sans accent."""
+    df = df.rename(columns=lambda name: str(name).lstrip("\ufeff").strip().replace("Ã©", "é"))
+    df = df.rename(columns={"Unite": "Unité"})
+    if df.columns.duplicated().any():
+        raise ValueError("Le fichier contient des intitulés de colonnes en double.")
+    return df
+
+
+def parse_enedis_dates(values: pd.Series) -> pd.Series:
+    """Lit les dates ISO ou françaises sans dépendre de la première ligne."""
+    text = values.astype("string").str.strip()
+    dates = pd.to_datetime(text, format="ISO8601", errors="coerce")
+    for date_format in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        missing = dates.isna()
+        if not missing.any():
+            break
+        dates.loc[missing] = pd.to_datetime(text.loc[missing], format=date_format, errors="coerce")
+    if dates.isna().any():
+        raise ValueError(
+            f"{int(dates.isna().sum())} horodatage(s) absent(s) ou illisible(s). "
+            "Formats attendus : année-mois-jour ou jour/mois/année, avec l'heure."
+        )
+    return dates
+
+
 @st.cache_data(show_spinner=False)
 def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     """Lit un export Enedis de puissance maximale journalière (PMA/PMA1/PMA2/PMA3)."""
@@ -1347,7 +1373,7 @@ def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
         for params in attempts:
             try:
                 buffer.seek(0)
-                candidate = pd.read_csv(buffer, **params)
+                candidate = normalize_enedis_columns(pd.read_csv(buffer, **params))
                 required = {"Horodate", "Valeur", "Grandeur physique"}
                 if required.issubset(candidate.columns):
                     df = candidate
@@ -1360,7 +1386,7 @@ def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
                 "et Grandeur physique sont attendues."
             ) from last_error
     else:
-        df = pd.read_excel(buffer)
+        df = normalize_enedis_columns(pd.read_excel(buffer))
 
     required = {"Horodate", "Valeur", "Grandeur physique"}
     missing = required - set(df.columns)
@@ -1383,11 +1409,7 @@ def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     )
     df = df[df["Grandeur physique"].isin(["PMA", "PMA1", "PMA2", "PMA3"])].copy()
 
-    df["Horodate"] = pd.to_datetime(
-        df["Horodate"],
-        format="%Y-%m-%d %H:%M:%S",
-        errors="coerce",
-    )
+    df["Horodate"] = parse_enedis_dates(df["Horodate"])
     df["Valeur"] = pd.to_numeric(
         df["Valeur"].astype(str).str.replace(",", ".", regex=False),
         errors="coerce",
@@ -1569,7 +1591,7 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
         for params in attempts:
             try:
                 buffer.seek(0)
-                candidate = pd.read_csv(buffer, **params)
+                candidate = normalize_enedis_columns(pd.read_csv(buffer, **params))
 
                 if {"Horodate", "Valeur"}.issubset(candidate.columns):
                     df = candidate
@@ -1583,7 +1605,7 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
                 "ou son format n'est pas reconnu."
             ) from last_error
     else:
-        df = pd.read_excel(buffer)
+        df = normalize_enedis_columns(pd.read_excel(buffer))
 
     required = {"Horodate", "Valeur"}
     missing = required - set(df.columns)
@@ -1626,11 +1648,7 @@ def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
     df = df[available_columns].copy()
 
-    df["Horodate"] = pd.to_datetime(
-        df["Horodate"],
-        errors="coerce",
-        dayfirst=True,
-    )
+    df["Horodate"] = parse_enedis_dates(df["Horodate"])
 
     df["Valeur"] = pd.to_numeric(
         df["Valeur"].astype(str).str.replace(",", ".", regex=False),
@@ -1664,20 +1682,25 @@ def detect_time_step(df: pd.DataFrame) -> pd.Timedelta:
 
 def detect_source_unit(df: pd.DataFrame) -> str:
     if "Unité" not in df.columns:
-        return "Wh"
+        raise ValueError("Unité des mesures absente : indiquez W, kW, Wh ou kWh dans le fichier.")
 
     units = (
         df["Unité"]
-        .dropna()
-        .astype(str)
+        .astype("string")
         .str.strip()
+        .str.lower()
+        .str.replace(" ", "", regex=False)
     )
-    units = units[units != ""]
-
-    if units.empty:
-        return "Wh"
-
-    return units.mode().iloc[0]
+    units = units.map({
+        "w": "W", "watt": "W", "watts": "W",
+        "kw": "kW", "kilowatt": "kW", "kilowatts": "kW",
+        "wh": "Wh", "w.h": "Wh", "kwh": "kWh", "kw.h": "kWh",
+    })
+    if units.empty or units.isna().any():
+        raise ValueError("Unité des mesures absente ou non reconnue : W, kW, Wh ou kWh attendus.")
+    if units.nunique() != 1:
+        raise ValueError("Plusieurs unités actives dans le fichier : harmonisez les unités avant l'import.")
+    return units.iloc[0]
 
 
 def parse_pas_hours(value, default_step: pd.Timedelta) -> float:
@@ -1737,12 +1760,7 @@ def enrich_energy_data(
         message = "Les valeurs sont interprétées comme une puissance moyenne en kW."
 
     else:
-        result["Energie_kWh"] = result["Valeur"] / 1000
-        result["Puissance_kW"] = result["Energie_kWh"] / result["Duree_h"]
-        message = (
-            f"Unité « {source_unit} » non reconnue : "
-            "hypothèse Wh par intervalle."
-        )
+        raise ValueError(f"Unité « {source_unit} » non reconnue : W, kW, Wh ou kWh attendus.")
 
     return result, message
 
@@ -9314,3 +9332,4 @@ if workspace_page == "Analyse":
 
 # Render after all widgets so this download captures their latest values.
 render_dossier_download(header_save)
+
