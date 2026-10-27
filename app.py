@@ -1,4 +1,5 @@
 import base64
+from excel_stream import report_workbook
 from ui_theme import apply_theme, compact_header, dossier_summary, heat_legend, open_report, open_analysis, update_solar_option, render_profile_matrix
 from heatmap_colors import style_matrix, pdf_cell_styles, cell_color, bounds, COLOR_SCALE
 import json
@@ -5145,77 +5146,25 @@ def make_excel_export(
     summary: pd.DataFrame,
     include_photovoltaic: bool = True,
 ) -> bytes:
-    output = BytesIO()
-
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary.to_excel(writer, index=False, sheet_name="Synthèse")
-        hourly_standardized_data.to_excel(
-            writer,
-            index=False,
-            sheet_name="Données traitées 1h",
-        )
-        hourly_data.to_excel(writer, index=False, sheet_name="Profil horaire")
-        daily_data.to_excel(
-            writer,
-            index=False,
-            sheet_name="Consommations journalières",
-        )
-        monthly_data.to_excel(
-            writer,
-            index=False,
-            sheet_name="Consommations mensuelles",
-        )
-        weekday_hour_matrix.to_excel(
-            writer,
-            sheet_name="Moyenne heure-jour",
-        )
-        date_hour_export = date_hour_matrix.copy()
-        date_hour_export.insert(
-            0,
-            "Jour",
-            [WEEKDAYS[d.weekday()] for d in date_hour_export.index],
-        )
-        date_hour_export.to_excel(
-            writer,
-            sheet_name="Heures toutes dates",
-        )
-        tariff_summary.to_excel(
-            writer,
-            index=False,
-            sheet_name="Répartition tarifaire",
-        )
-        tariff_detail.to_excel(
-            writer,
-            index=False,
-            sheet_name="Détail tarifaire",
-        )
-        if include_photovoltaic:
-            financial_summary.to_excel(writer, index=False, sheet_name="Synthèse financière")
-            financial_projection_data.to_excel(writer, index=False, sheet_name="Projection financière")
-
-        workbook = writer.book
-
-        for sheet_name in workbook.sheetnames:
-            worksheet = workbook[sheet_name]
-            worksheet.freeze_panes = "A2"
-            worksheet.auto_filter.ref = worksheet.dimensions
-
-            for column_cells in worksheet.columns:
-                max_length = 0
-                column_letter = column_cells[0].column_letter
-
-                for cell in column_cells:
-                    max_length = max(
-                        max_length,
-                        len(str(cell.value or "")),
-                    )
-
-                worksheet.column_dimensions[column_letter].width = min(
-                    max(max_length + 2, 11),
-                    35,
-                )
-
-    return output.getvalue()
+    date_hour_export = date_hour_matrix.copy()
+    date_hour_export.insert(0, "Jour", [WEEKDAYS[d.weekday()] for d in date_hour_export.index])
+    sheets = [
+        ("Synthèse", summary, False),
+        ("Données traitées 1h", hourly_standardized_data, False),
+        ("Profil horaire", hourly_data, False),
+        ("Consommations journalières", daily_data, False),
+        ("Consommations mensuelles", monthly_data, False),
+        ("Moyenne heure-jour", weekday_hour_matrix, True),
+        ("Heures toutes dates", date_hour_export, True),
+        ("Répartition tarifaire", tariff_summary, False),
+        ("Détail tarifaire", tariff_detail, False),
+    ]
+    if include_photovoltaic:
+        sheets.extend([
+            ("Synthèse financière", financial_summary, False),
+            ("Projection financière", financial_projection_data, False),
+        ])
+    return report_workbook(sheets)
 
 
 
