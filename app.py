@@ -1357,7 +1357,8 @@ def parse_enedis_dates(values: pd.Series) -> pd.Series:
     return dates
 
 
-@st.cache_data(show_spinner=False)
+# Retain only the latest parsed file; active sessions keep their own copy.
+@st.cache_data(max_entries=1, ttl=900, show_spinner=False)
 def read_enedis_pma_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     """Lit un export Enedis de puissance maximale journalière (PMA/PMA1/PMA2/PMA3)."""
     buffer = BytesIO(file_bytes)
@@ -1490,7 +1491,8 @@ def build_pma_weekday_means(pma_daily: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-@st.cache_data(show_spinner=False)
+# Retain only the latest parsed file; active sessions keep their own copy.
+@st.cache_data(max_entries=1, ttl=900, show_spinner=False)
 def read_geredis_file(file_bytes: bytes) -> pd.DataFrame:
     """Convertit une courbe de charge GEREDIS .txt (6 valeurs de 10 min par ligne).
 
@@ -1569,7 +1571,8 @@ def read_geredis_file(file_bytes: bytes) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+# Retain only the latest parsed file; active sessions keep their own copy.
+@st.cache_data(max_entries=1, ttl=900, show_spinner=False)
 def read_enedis_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     # Le moteur historique conserve ce nom pour éviter toute régression,
     # mais il accepte désormais aussi les courbes de charge GEREDIS .txt.
@@ -2303,7 +2306,7 @@ def build_daily_calendar(
 
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(max_entries=128, ttl=86400, show_spinner=False)
 def geocode_company_address(address: str) -> list[dict]:
     """
     Géocode une adresse avec le service officiel de la Géoplateforme.
@@ -2591,7 +2594,7 @@ def add_astronomical_solar_data(
     return result
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(max_entries=8, ttl=86400, show_spinner=False)
 def fetch_pvgis_reference_profile(
     latitude: float,
     longitude: float,

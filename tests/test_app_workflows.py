@@ -213,3 +213,31 @@ def test_solar_is_additive_and_saved_dossiers_restore_the_option(monkeypatch):
     assert_ok(at)
     assert core | {"Production solaire", "Simulation financière"} == {t.label for t in at.tabs}
 
+
+
+def test_four_meter_dossiers_replace_data_in_one_session():
+    at = None
+    for meter in range(1, 5):
+        source = curve_file()
+        source['name'] = f'compteur-{meter}.csv'
+        frame = pd.read_csv(BytesIO(source['content']), sep=';')
+        frame['Valeur'] = float(meter)
+        source['content'] = frame.to_csv(index=False, sep=';').encode()
+        fields = {'company_name': f'Compteur {meter}',
+                  'electricity_tariff_type': 'Tarif unique',
+                  'unique_electricity_price': 0.25,
+                  'note_context': f'Note {meter}'}
+        if at is None:
+            at = launch(fields, {'curve': source, 'pma': pma_file()})
+        else:
+            at.session_state['_pending_dossier'] = decode_dossier(
+                encode_dossier(fields, {'curve': source}))
+            at.run()
+        assert_ok(at)
+        assert at.session_state['_test_result']['total'] == pytest.approx(168 * meter)
+        assert at.session_state['_test_result']['variable'] == pytest.approx(42 * meter)
+        assert at.text_input(key='company_name').value == f'Compteur {meter}'
+        assert at.text_area(key='note_context').value == f'Note {meter}'
+        assert at.session_state['_source_files']['curve']['name'] == source['name']
+        if meter > 1:
+            assert 'pma' not in at.session_state['_source_files']
