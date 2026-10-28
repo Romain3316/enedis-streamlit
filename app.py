@@ -1,4 +1,6 @@
 import base64
+import gc
+from export_ui import prepare_export, log_memory
 from excel_stream import report_workbook
 from ui_theme import apply_theme, compact_header, dossier_summary, heat_legend, open_report, open_analysis, update_solar_option, render_profile_matrix
 from heatmap_colors import style_matrix, pdf_cell_styles, cell_color, bounds, COLOR_SCALE
@@ -1125,7 +1127,12 @@ st.markdown(
 # FONCTIONS
 # ============================================================
 
+# Restore the native renderer after a hot reload of older versions that wrapped it
+# globally on every rerun. Otherwise each wrapper retains the previous run's data.
 _PLOTLY_CHART_ORIGINAL = st.plotly_chart
+while getattr(_PLOTLY_CHART_ORIGINAL, "__name__", "") == "cma_plotly_chart":
+    _PLOTLY_CHART_ORIGINAL = _PLOTLY_CHART_ORIGINAL.__globals__["_PLOTLY_CHART_ORIGINAL"]
+st.plotly_chart = _PLOTLY_CHART_ORIGINAL
 
 
 def _plotly_default_height(figure) -> int:
@@ -1267,7 +1274,7 @@ def cma_plotly_chart(figure, *args, **kwargs):
     )
 
 
-st.plotly_chart = cma_plotly_chart
+
 
 
 
@@ -2269,8 +2276,11 @@ def make_colored_png_bytes(
             x += w
 
     output = BytesIO()
-    image.save(output, format="PNG", optimize=True)
-    return output.getvalue()
+    try:
+        image.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+    finally:
+        image.close()
 
 
 def build_daily_calendar(
@@ -5316,7 +5326,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
                 margin=dict(l=20, r=20, t=65, b=20),
             )
             fig_pma_daily.update_yaxes(rangemode="tozero")
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_pma_daily,
                 use_container_width=True,
                 key="pma_daily_chart",
@@ -5358,7 +5368,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
                 margin=dict(l=20, r=20, t=65, b=20),
             )
             fig_pma_weekday.update_yaxes(rangemode="tozero")
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_pma_weekday,
                 use_container_width=True,
                 key="pma_weekday_chart",
@@ -5381,6 +5391,9 @@ def render_pma_analysis(pma_uploaded_file) -> None:
 # ACCUEIL
 # ============================================================
 
+# Reclaim cycles from the previous run before allocating another large dataset.
+gc.collect()
+log_memory("start_run")
 initialize_dossier()
 apply_theme()
 # Only the report is a separate view; obsolete V24 navigation returns to analysis.
@@ -6754,6 +6767,7 @@ if workspace_page == "Rapport":
 
         st.markdown("---")
         st.subheader("Exporter l'analyse")
+        st.caption("Préparez le fichier souhaité, puis téléchargez-le. Après une modification du dossier, préparez-le à nouveau.")
 
         st.markdown("### Export dédié AutoCal-Sol")
         st.caption(
@@ -6761,10 +6775,8 @@ if workspace_page == "Rapport":
             "par AutoCal-Sol. Les heures absentes sont automatiquement renseignées à 0 W."
         )
 
-        autocalsol_reference = add_consumption_period_columns(enriched_df)
-        autocalsol_years = sorted(
-            autocalsol_reference["Horodate_debut"].dropna().dt.year.unique().astype(int).tolist()
-        )
+        autocalsol_start = enriched_df["Horodate"] - pd.to_timedelta(enriched_df["Duree_h"], unit="h")
+        autocalsol_years = sorted(autocalsol_start.dropna().dt.year.unique().astype(int).tolist())
         autocalsol_default_year = (
             int(selected_year)
             if selected_year is not None and int(selected_year) in autocalsol_years
@@ -6783,7 +6795,7 @@ if workspace_page == "Rapport":
             enriched_df,
             int(autocalsol_year),
         )
-        autocalsol_excel = make_autocalsol_excel(autocalsol_df)
+        autocalsol_excel = prepare_export('autocalsol_excel', 'Préparer l’export AutoCal-Sol Excel', lambda: make_autocalsol_excel(autocalsol_df), extra=autocalsol_year)
         autocalsol_csv = make_autocalsol_csv(autocalsol_df)
 
         auto_info1, auto_info2, auto_info3 = st.columns(3)
@@ -6805,471 +6817,475 @@ if workspace_page == "Rapport":
                 key="download_autocalsol_csv",
             )
         with auto_download_excel:
-            st.download_button(
-                "⬇️ Export AutoCal-Sol (.xlsx)",
-                data=autocalsol_excel,
-                file_name=f"courbe_charge_autocalsol_{autocalsol_year}.xlsx",
-                mime=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
-                ),
-                use_container_width=True,
-                key="download_autocalsol_excel",
-            )
+            if autocalsol_excel is not None:
+                st.download_button(
+                    "⬇️ Export AutoCal-Sol (.xlsx)",
+                    data=autocalsol_excel,
+                    file_name=f"courbe_charge_autocalsol_{autocalsol_year}.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
+                    key="download_autocalsol_excel",
+                )
 
         st.markdown("---")
         st.markdown("### Exports complets CMA")
 
-        summary_df = pd.DataFrame(
-            {
-                "Indicateur": [
-                    "Nom de l'entreprise",
-                    "SIRET",
-                    "Conseiller CMA",
-                    "Date du diagnostic",
-                    "Fichier source",
-                    "Début de période",
-                    "Fin de période",
-                    "Pas de temps source",
-                    "Pas de temps après traitement",
-                    "Unité source",
-                    "Consommation totale (kWh)",
-                    "Moyenne journalière (kWh)",
-                    "Médiane journalière (kWh)",
-                    "Puissance moyenne maximale (kW)",
-                    "Adresse de l'entreprise",
-                    "Latitude",
-                    "Longitude",
-                    "Part de consommation pendant le jour (%)",
-                    "Part de consommation pendant la production PV (%)",
-                    "Puissance photovoltaïque étudiée (kWc)",
-                    "Production PVGIS estimée (kWh)",
-                    "Énergie solaire autoconsommée estimée (kWh)",
-                    "Surplus photovoltaïque estimé (kWh)",
-                    "Électricité restant achetée au réseau (kWh)",
-                    "Taux d'autoconsommation estimé (%)",
-                    "Taux d'autoproduction estimé (%)",
-                    "Indice photovoltaïque CMA (/100)",
-                    "Appréciation de l'indice CMA",
-                    "Score correspondance usages / production (/100)",
-                    "Score autoconsommation (/100)",
-                    "Score autoproduction (/100)",
-                    "Score régularité des consommations (/100)",
-                    "Score potentiel solaire local (/100)",
-                    "Productible estimé (kWh/kWc)",
-                    "HP hiver (kWh)",
-                    "HC hiver (kWh)",
-                    "HP été (kWh)",
-                    "HC été (kWh)",
-                    "Part totale HP (%)",
-                    "Part totale HC (%)",
-                    "Indice optimisation tarifaire CMA (/100)",
-                    "Appréciation indice tarifaire",
-                    "Investissement brut estimé (€ HTVA)",
-                    "Investissement net estimé (€ HTVA)",
-                    "Charges annuelles estimées (€ HTVA/an)",
-                    "Économie autoconsommation annuelle (€ HTVA)",
-                    "Revenu surplus annuel (€ HTVA)",
-                    "Gain net année 1 (€ HTVA)",
-                    "Temps de retour simple (années)",
-                    "VAN du projet (€)",
-                    "TRI estimé (%)",
-                    "Gain net cumulé sur l'horizon (€)",
-                    "Synthèse assistant CMA",
-                    "Statut assistant CMA",
-                    "Facteur de charge (%)",
-                    "Horodatages en doublon",
-                    "Jours atypiques",
-                ],
-                "Valeur": [
-                    company_name,
-                    company_siret,
-                    advisor_name,
-                    diagnostic_date.strftime("%d/%m/%Y"),
-                    uploaded_file.name,
-                    filtered_df["Horodate"].min(),
-                    filtered_df["Horodate"].max(),
-                    str(time_step),
-                    "01:00:00",
-                    source_unit,
-                    total_kwh,
-                    average_daily_kwh,
-                    median_daily_kwh,
-                    maximum_power_kw,
-                    (
-                        selected_location["label"]
-                        if selected_location
-                        else ""
-                    ),
-                    (
-                        selected_location["latitude"]
-                        if selected_location
-                        else ""
-                    ),
-                    (
-                        selected_location["longitude"]
-                        if selected_location
-                        else ""
-                    ),
-                    (
-                        daylight_share
-                        if solar_analysis_available
-                        else ""
-                    ),
-                    (
-                        production_period_share
-                        if pvgis_available
-                        else ""
-                    ),
-                    pv_peak_kwp,
-                    (
-                        pvgis_production_kwh
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        self_consumed_kwh
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        pv_surplus_kwh
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        grid_import_kwh
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        self_consumption_rate
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        self_sufficiency_rate
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["label"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["overlap_score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["self_consumption_score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["self_sufficiency_score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["regularity_score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        cma_score_data["solar_resource_score"]
-                        if pvgis_available
-                        else ""
-                    ),
-                    (
-                        annual_yield_kwh_per_kwp
-                        if pvgis_available
-                        else ""
-                    ),
-                    hp_winter_kwh,
-                    hc_winter_kwh,
-                    hp_summer_kwh,
-                    hc_summer_kwh,
-                    tariff_score_data["hp_share"],
-                    tariff_score_data["hc_share"],
-                    tariff_score_data["score"],
-                    tariff_score_data["label"],
-                    investment_data["gross_total"],
-                    investment_data["net_total"],
-                    operating_cost_data["total"],
-                    energy_value_data["annual_self_consumption_saving"],
-                    energy_value_data["annual_surplus_revenue"],
-                    financial_projection["annual_net_gain_year_1"],
-                    (
-                        financial_projection["payback_year"]
-                        if not pd.isna(financial_projection["payback_year"])
-                        else ""
-                    ),
-                    financial_projection["npv"],
-                    (
-                        financial_projection["irr"] * 100
-                        if not pd.isna(financial_projection["irr"])
-                        else ""
-                    ),
-                    financial_projection["total_net_gain"],
-                    business_assistant["conclusion"],
-                    business_assistant["status"],
-                    load_factor,
-                    duplicate_count,
-                    len(atypical_days),
-                ],
-            }
-        )
+        def build_report_excel():
+            summary_df = pd.DataFrame(
+                {
+                    "Indicateur": [
+                        "Nom de l'entreprise",
+                        "SIRET",
+                        "Conseiller CMA",
+                        "Date du diagnostic",
+                        "Fichier source",
+                        "Début de période",
+                        "Fin de période",
+                        "Pas de temps source",
+                        "Pas de temps après traitement",
+                        "Unité source",
+                        "Consommation totale (kWh)",
+                        "Moyenne journalière (kWh)",
+                        "Médiane journalière (kWh)",
+                        "Puissance moyenne maximale (kW)",
+                        "Adresse de l'entreprise",
+                        "Latitude",
+                        "Longitude",
+                        "Part de consommation pendant le jour (%)",
+                        "Part de consommation pendant la production PV (%)",
+                        "Puissance photovoltaïque étudiée (kWc)",
+                        "Production PVGIS estimée (kWh)",
+                        "Énergie solaire autoconsommée estimée (kWh)",
+                        "Surplus photovoltaïque estimé (kWh)",
+                        "Électricité restant achetée au réseau (kWh)",
+                        "Taux d'autoconsommation estimé (%)",
+                        "Taux d'autoproduction estimé (%)",
+                        "Indice photovoltaïque CMA (/100)",
+                        "Appréciation de l'indice CMA",
+                        "Score correspondance usages / production (/100)",
+                        "Score autoconsommation (/100)",
+                        "Score autoproduction (/100)",
+                        "Score régularité des consommations (/100)",
+                        "Score potentiel solaire local (/100)",
+                        "Productible estimé (kWh/kWc)",
+                        "HP hiver (kWh)",
+                        "HC hiver (kWh)",
+                        "HP été (kWh)",
+                        "HC été (kWh)",
+                        "Part totale HP (%)",
+                        "Part totale HC (%)",
+                        "Indice optimisation tarifaire CMA (/100)",
+                        "Appréciation indice tarifaire",
+                        "Investissement brut estimé (€ HTVA)",
+                        "Investissement net estimé (€ HTVA)",
+                        "Charges annuelles estimées (€ HTVA/an)",
+                        "Économie autoconsommation annuelle (€ HTVA)",
+                        "Revenu surplus annuel (€ HTVA)",
+                        "Gain net année 1 (€ HTVA)",
+                        "Temps de retour simple (années)",
+                        "VAN du projet (€)",
+                        "TRI estimé (%)",
+                        "Gain net cumulé sur l'horizon (€)",
+                        "Synthèse assistant CMA",
+                        "Statut assistant CMA",
+                        "Facteur de charge (%)",
+                        "Horodatages en doublon",
+                        "Jours atypiques",
+                    ],
+                    "Valeur": [
+                        company_name,
+                        company_siret,
+                        advisor_name,
+                        diagnostic_date.strftime("%d/%m/%Y"),
+                        uploaded_file.name,
+                        filtered_df["Horodate"].min(),
+                        filtered_df["Horodate"].max(),
+                        str(time_step),
+                        "01:00:00",
+                        source_unit,
+                        total_kwh,
+                        average_daily_kwh,
+                        median_daily_kwh,
+                        maximum_power_kw,
+                        (
+                            selected_location["label"]
+                            if selected_location
+                            else ""
+                        ),
+                        (
+                            selected_location["latitude"]
+                            if selected_location
+                            else ""
+                        ),
+                        (
+                            selected_location["longitude"]
+                            if selected_location
+                            else ""
+                        ),
+                        (
+                            daylight_share
+                            if solar_analysis_available
+                            else ""
+                        ),
+                        (
+                            production_period_share
+                            if pvgis_available
+                            else ""
+                        ),
+                        pv_peak_kwp,
+                        (
+                            pvgis_production_kwh
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            self_consumed_kwh
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            pv_surplus_kwh
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            grid_import_kwh
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            self_consumption_rate
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            self_sufficiency_rate
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["label"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["overlap_score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["self_consumption_score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["self_sufficiency_score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["regularity_score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            cma_score_data["solar_resource_score"]
+                            if pvgis_available
+                            else ""
+                        ),
+                        (
+                            annual_yield_kwh_per_kwp
+                            if pvgis_available
+                            else ""
+                        ),
+                        hp_winter_kwh,
+                        hc_winter_kwh,
+                        hp_summer_kwh,
+                        hc_summer_kwh,
+                        tariff_score_data["hp_share"],
+                        tariff_score_data["hc_share"],
+                        tariff_score_data["score"],
+                        tariff_score_data["label"],
+                        investment_data["gross_total"],
+                        investment_data["net_total"],
+                        operating_cost_data["total"],
+                        energy_value_data["annual_self_consumption_saving"],
+                        energy_value_data["annual_surplus_revenue"],
+                        financial_projection["annual_net_gain_year_1"],
+                        (
+                            financial_projection["payback_year"]
+                            if not pd.isna(financial_projection["payback_year"])
+                            else ""
+                        ),
+                        financial_projection["npv"],
+                        (
+                            financial_projection["irr"] * 100
+                            if not pd.isna(financial_projection["irr"])
+                            else ""
+                        ),
+                        financial_projection["total_net_gain"],
+                        business_assistant["conclusion"],
+                        business_assistant["status"],
+                        load_factor,
+                        duplicate_count,
+                        len(atypical_days),
+                    ],
+                }
+            )
 
-        if not pv_enabled:
-            # Keep the consumption and tariff indicators, without a default PV project.
-            energy_indicators = {
-                "Nom de l'entreprise", "SIRET", "Conseiller CMA", "Date du diagnostic",
-                "Fichier source", "Début de période", "Fin de période", "Pas de temps source",
-                "Pas de temps après traitement", "Unité source", "Consommation totale (kWh)",
-                "Moyenne journalière (kWh)", "Médiane journalière (kWh)", "Puissance moyenne maximale (kW)",
-                "Adresse de l'entreprise", "HP hiver (kWh)", "HC hiver (kWh)", "HP été (kWh)",
-                "HC été (kWh)", "Part totale HP (%)", "Part totale HC (%)",
-                "Indice optimisation tarifaire CMA (/100)", "Appréciation indice tarifaire",
-                "Facteur de charge (%)", "Horodatages en doublon", "Jours atypiques",
-            }
-            summary_df = summary_df[summary_df["Indicateur"].isin(energy_indicators)].copy()
-            summary_df.loc[summary_df["Indicateur"] == "Adresse de l'entreprise", "Valeur"] = company_address
-        summary_df = pd.concat([summary_df, pd.DataFrame({
-            "Indicateur": ["Type de tarif", "Part variable sur la période (€ HTVA)",
-                           "Part fixe proratisée sur la période (€ HTVA)", "Total sur la période (€ HTVA)"],
-            "Valeur": [electricity_tariff_type, tariff_variable_cost_eur, tariff_fixed_cost_eur, tariff_total_cost_eur],
-        })], ignore_index=True)
+            if not pv_enabled:
+                # Keep the consumption and tariff indicators, without a default PV project.
+                energy_indicators = {
+                    "Nom de l'entreprise", "SIRET", "Conseiller CMA", "Date du diagnostic",
+                    "Fichier source", "Début de période", "Fin de période", "Pas de temps source",
+                    "Pas de temps après traitement", "Unité source", "Consommation totale (kWh)",
+                    "Moyenne journalière (kWh)", "Médiane journalière (kWh)", "Puissance moyenne maximale (kW)",
+                    "Adresse de l'entreprise", "HP hiver (kWh)", "HC hiver (kWh)", "HP été (kWh)",
+                    "HC été (kWh)", "Part totale HP (%)", "Part totale HC (%)",
+                    "Indice optimisation tarifaire CMA (/100)", "Appréciation indice tarifaire",
+                    "Facteur de charge (%)", "Horodatages en doublon", "Jours atypiques",
+                }
+                summary_df = summary_df[summary_df["Indicateur"].isin(energy_indicators)].copy()
+                summary_df.loc[summary_df["Indicateur"] == "Adresse de l'entreprise", "Valeur"] = company_address
+            summary_df = pd.concat([summary_df, pd.DataFrame({
+                "Indicateur": ["Type de tarif", "Part variable sur la période (€ HTVA)",
+                               "Part fixe proratisée sur la période (€ HTVA)", "Total sur la période (€ HTVA)"],
+                "Valeur": [electricity_tariff_type, tariff_variable_cost_eur, tariff_fixed_cost_eur, tariff_total_cost_eur],
+            })], ignore_index=True)
 
-        # Export principal obligatoirement normalisé à un pas horaire.
-        # Les relevés de 30 minutes sont agrégés dans hourly_df :
-        # - moyenne pour une unité de puissance (W / kW) ;
-        # - somme pour une unité d'énergie (Wh / kWh).
-        hourly_standardized_export = hourly_df.copy()
+            # Export principal obligatoirement normalisé à un pas horaire.
+            # Les relevés de 30 minutes sont agrégés dans hourly_df :
+            # - moyenne pour une unité de puissance (W / kW) ;
+            # - somme pour une unité d'énergie (Wh / kWh).
+            hourly_standardized_export = hourly_df.copy()
 
-        if solar_analysis_available:
-            solar_hourly_columns = [
+            if solar_analysis_available:
+                solar_hourly_columns = [
+                    "Horodate",
+                    "Lever_soleil",
+                    "Coucher_soleil",
+                    "Hauteur_soleil_deg",
+                ]
+
+                if pvgis_available:
+                    solar_hourly_columns += [
+                        "Irradiation_Wm2",
+                        "Production_PV_kW",
+                        "Production_PV_kWh",
+                        "Autoconsommation_estimee_kWh",
+                    ]
+
+                solar_hourly_export = filtered_df.copy()
+                solar_hourly_export["Horodate_heure"] = (
+                    solar_hourly_export["Horodate"].dt.ceil("h")
+                )
+
+                aggregations = {
+                    "Lever_soleil": "first",
+                    "Coucher_soleil": "first",
+                    "Hauteur_soleil_deg": "mean",
+                }
+
+                if pvgis_available:
+                    aggregations.update(
+                        {
+                            "Irradiation_Wm2": "mean",
+                            "Production_PV_kW": "mean",
+                            "Production_PV_kWh": "sum",
+                            "Autoconsommation_estimee_kWh": "sum",
+                        }
+                    )
+
+                solar_hourly_export = (
+                    solar_hourly_export.groupby(
+                        "Horodate_heure",
+                        as_index=False,
+                    )
+                    .agg(aggregations)
+                    .rename(
+                        columns={"Horodate_heure": "Horodate"}
+                    )
+                )
+
+                hourly_standardized_export = (
+                    hourly_standardized_export.merge(
+                        solar_hourly_export,
+                        on="Horodate",
+                        how="left",
+                    )
+                )
+
+            normalized_unit = str(source_unit).lower().replace(" ", "")
+
+            if normalized_unit in {"w", "watt", "watts"}:
+                hourly_standardized_export["Valeur"] = (
+                    hourly_standardized_export["Puissance_kW"] * 1000
+                )
+                export_unit = "W"
+            elif normalized_unit in {"kw", "kilowatt", "kilowatts"}:
+                hourly_standardized_export["Valeur"] = (
+                    hourly_standardized_export["Puissance_kW"]
+                )
+                export_unit = "kW"
+            elif normalized_unit in {"kwh", "kw.h"}:
+                hourly_standardized_export["Valeur"] = (
+                    hourly_standardized_export["Energie_kWh"]
+                )
+                export_unit = "kWh"
+            else:
+                hourly_standardized_export["Valeur"] = (
+                    hourly_standardized_export["Energie_kWh"] * 1000
+                )
+                export_unit = "Wh"
+
+            hourly_standardized_export.insert(0, "Unité", export_unit)
+            hourly_standardized_export["Pas"] = "PT60M"
+            hourly_standardized_export["Horodate"] = (
+                hourly_standardized_export["Horodate"]
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
+            )
+            export_columns = [
+                "Unité",
                 "Horodate",
+                "Valeur",
+                "Pas",
+            ]
+
+            optional_solar_columns = [
                 "Lever_soleil",
                 "Coucher_soleil",
                 "Hauteur_soleil_deg",
+                "Irradiation_Wm2",
+                "Production_PV_kW",
+                "Production_PV_kWh",
+                "Autoconsommation_estimee_kWh",
             ]
 
-            if pvgis_available:
-                solar_hourly_columns += [
-                    "Irradiation_Wm2",
-                    "Production_PV_kW",
-                    "Production_PV_kWh",
-                    "Autoconsommation_estimee_kWh",
+            export_columns += [
+                column
+                for column in optional_solar_columns
+                if column in hourly_standardized_export.columns
+            ]
+
+            hourly_standardized_export = hourly_standardized_export[
+                export_columns
+            ]
+
+            hourly_export = hourly_df.copy()
+            hourly_export["Horodate"] = (
+                hourly_export["Horodate"]
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
+            )
+
+            daily_export = daily_df.copy()
+            daily_export["Date"] = (
+                daily_export["Date"]
+                .dt.strftime("%d/%m/%Y")
+            )
+
+            monthly_export = monthly_df.copy()
+            monthly_export["Mois_date"] = (
+                monthly_export["Mois_date"]
+                .dt.strftime("%m/%Y")
+            )
+
+            tariff_summary_export = tariff_summary_df.copy()
+
+            tariff_detail_export = filtered_df[
+                [
+                    "Horodate",
+                    "Horodate_tarif",
+                    "Energie_kWh",
+                    "Saison_tarifaire",
+                    "Plage_tarifaire",
+                    "Categorie_tarifaire",
                 ]
+            ].copy()
 
-            solar_hourly_export = filtered_df.copy()
-            solar_hourly_export["Horodate_heure"] = (
-                solar_hourly_export["Horodate"].dt.ceil("h")
+            tariff_detail_export["Horodate"] = (
+                tariff_detail_export["Horodate"]
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
+            )
+            tariff_detail_export["Horodate_tarif"] = (
+                tariff_detail_export["Horodate_tarif"]
+                .dt.strftime("%d/%m/%Y %H:%M:%S")
             )
 
-            aggregations = {
-                "Lever_soleil": "first",
-                "Coucher_soleil": "first",
-                "Hauteur_soleil_deg": "mean",
-            }
-
-            if pvgis_available:
-                aggregations.update(
-                    {
-                        "Irradiation_Wm2": "mean",
-                        "Production_PV_kW": "mean",
-                        "Production_PV_kWh": "sum",
-                        "Autoconsommation_estimee_kWh": "sum",
-                    }
-                )
-
-            solar_hourly_export = (
-                solar_hourly_export.groupby(
-                    "Horodate_heure",
-                    as_index=False,
-                )
-                .agg(aggregations)
-                .rename(
-                    columns={"Horodate_heure": "Horodate"}
-                )
+            financial_summary_export = pd.DataFrame(
+                {
+                    "Indicateur": [
+                        "Puissance étudiée (kWc)",
+                        "Type de fixation",
+                        "Coût équipements + pose (€/Wc)",
+                        "Coût fixation (€/Wc)",
+                        "Investissement brut (€ HTVA)",
+                        "Aides déduites (€)",
+                        "Investissement net (€ HTVA)",
+                        "Raccordement (€ HTVA)",
+                        "Charges annuelles (€ HTVA/an)",
+                        "Facture annuelle de référence (€ HTVA)",
+                        "Économie autoconsommation (€ HTVA/an)",
+                        "Revenu surplus (€ HTVA/an)",
+                        "Gain net année 1 (€ HTVA)",
+                        "Temps de retour simple (années)",
+                        "VAN (€)",
+                        "TRI (%)",
+                        "Gain net cumulé (€)",
+                    ],
+                    "Valeur": [
+                        pv_peak_kwp,
+                        fixing_type,
+                        investment_data["equipment_rate"],
+                        investment_data["fixing_rate"],
+                        investment_data["gross_total"],
+                        investment_data["grant_amount"],
+                        investment_data["net_total"],
+                        connection_data["total"],
+                        operating_cost_data["total"],
+                        energy_value_data["annual_energy_bill"],
+                        energy_value_data["annual_self_consumption_saving"],
+                        energy_value_data["annual_surplus_revenue"],
+                        financial_projection["annual_net_gain_year_1"],
+                        (
+                            financial_projection["payback_year"]
+                            if not pd.isna(financial_projection["payback_year"])
+                            else ""
+                        ),
+                        financial_projection["npv"],
+                        (
+                            financial_projection["irr"] * 100
+                            if not pd.isna(financial_projection["irr"])
+                            else ""
+                        ),
+                        financial_projection["total_net_gain"],
+                    ],
+                }
             )
 
-            hourly_standardized_export = (
-                hourly_standardized_export.merge(
-                    solar_hourly_export,
-                    on="Horodate",
-                    how="left",
-                )
+            return make_excel_export(
+                hourly_standardized_export,
+                hourly_export,
+                daily_export,
+                monthly_export,
+                weekday_hour_matrix.round(3),
+                date_hour_matrix.round(3),
+                tariff_summary_export,
+                tariff_detail_export,
+                financial_summary_export,
+                financial_projection["table"],
+                summary_df,
+                include_photovoltaic=pv_enabled,
             )
 
-        normalized_unit = str(source_unit).lower().replace(" ", "")
-
-        if normalized_unit in {"w", "watt", "watts"}:
-            hourly_standardized_export["Valeur"] = (
-                hourly_standardized_export["Puissance_kW"] * 1000
-            )
-            export_unit = "W"
-        elif normalized_unit in {"kw", "kilowatt", "kilowatts"}:
-            hourly_standardized_export["Valeur"] = (
-                hourly_standardized_export["Puissance_kW"]
-            )
-            export_unit = "kW"
-        elif normalized_unit in {"kwh", "kw.h"}:
-            hourly_standardized_export["Valeur"] = (
-                hourly_standardized_export["Energie_kWh"]
-            )
-            export_unit = "kWh"
-        else:
-            hourly_standardized_export["Valeur"] = (
-                hourly_standardized_export["Energie_kWh"] * 1000
-            )
-            export_unit = "Wh"
-
-        hourly_standardized_export.insert(0, "Unité", export_unit)
-        hourly_standardized_export["Pas"] = "PT60M"
-        hourly_standardized_export["Horodate"] = (
-            hourly_standardized_export["Horodate"]
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-        export_columns = [
-            "Unité",
-            "Horodate",
-            "Valeur",
-            "Pas",
-        ]
-
-        optional_solar_columns = [
-            "Lever_soleil",
-            "Coucher_soleil",
-            "Hauteur_soleil_deg",
-            "Irradiation_Wm2",
-            "Production_PV_kW",
-            "Production_PV_kWh",
-            "Autoconsommation_estimee_kWh",
-        ]
-
-        export_columns += [
-            column
-            for column in optional_solar_columns
-            if column in hourly_standardized_export.columns
-        ]
-
-        hourly_standardized_export = hourly_standardized_export[
-            export_columns
-        ]
-
-        hourly_export = hourly_df.copy()
-        hourly_export["Horodate"] = (
-            hourly_export["Horodate"]
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-
-        daily_export = daily_df.copy()
-        daily_export["Date"] = (
-            daily_export["Date"]
-            .dt.strftime("%d/%m/%Y")
-        )
-
-        monthly_export = monthly_df.copy()
-        monthly_export["Mois_date"] = (
-            monthly_export["Mois_date"]
-            .dt.strftime("%m/%Y")
-        )
-
-        tariff_summary_export = tariff_summary_df.copy()
-
-        tariff_detail_export = filtered_df[
-            [
-                "Horodate",
-                "Horodate_tarif",
-                "Energie_kWh",
-                "Saison_tarifaire",
-                "Plage_tarifaire",
-                "Categorie_tarifaire",
-            ]
-        ].copy()
-
-        tariff_detail_export["Horodate"] = (
-            tariff_detail_export["Horodate"]
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-        tariff_detail_export["Horodate_tarif"] = (
-            tariff_detail_export["Horodate_tarif"]
-            .dt.strftime("%d/%m/%Y %H:%M:%S")
-        )
-
-        financial_summary_export = pd.DataFrame(
-            {
-                "Indicateur": [
-                    "Puissance étudiée (kWc)",
-                    "Type de fixation",
-                    "Coût équipements + pose (€/Wc)",
-                    "Coût fixation (€/Wc)",
-                    "Investissement brut (€ HTVA)",
-                    "Aides déduites (€)",
-                    "Investissement net (€ HTVA)",
-                    "Raccordement (€ HTVA)",
-                    "Charges annuelles (€ HTVA/an)",
-                    "Facture annuelle de référence (€ HTVA)",
-                    "Économie autoconsommation (€ HTVA/an)",
-                    "Revenu surplus (€ HTVA/an)",
-                    "Gain net année 1 (€ HTVA)",
-                    "Temps de retour simple (années)",
-                    "VAN (€)",
-                    "TRI (%)",
-                    "Gain net cumulé (€)",
-                ],
-                "Valeur": [
-                    pv_peak_kwp,
-                    fixing_type,
-                    investment_data["equipment_rate"],
-                    investment_data["fixing_rate"],
-                    investment_data["gross_total"],
-                    investment_data["grant_amount"],
-                    investment_data["net_total"],
-                    connection_data["total"],
-                    operating_cost_data["total"],
-                    energy_value_data["annual_energy_bill"],
-                    energy_value_data["annual_self_consumption_saving"],
-                    energy_value_data["annual_surplus_revenue"],
-                    financial_projection["annual_net_gain_year_1"],
-                    (
-                        financial_projection["payback_year"]
-                        if not pd.isna(financial_projection["payback_year"])
-                        else ""
-                    ),
-                    financial_projection["npv"],
-                    (
-                        financial_projection["irr"] * 100
-                        if not pd.isna(financial_projection["irr"])
-                        else ""
-                    ),
-                    financial_projection["total_net_gain"],
-                ],
-            }
-        )
-
-        excel_bytes = make_excel_export(
-            hourly_standardized_export,
-            hourly_export,
-            daily_export,
-            monthly_export,
-            weekday_hour_matrix.round(3),
-            date_hour_matrix.round(3),
-            tariff_summary_export,
-            tariff_detail_export,
-            financial_summary_export,
-            financial_projection["table"],
-            summary_df,
-            include_photovoltaic=pv_enabled,
-        )
+        excel_bytes = prepare_export('report_excel', 'Préparer le classeur Excel complet', build_report_excel)
 
         export1, export2 = st.columns(2)
 
@@ -7292,7 +7308,7 @@ if workspace_page == "Rapport":
 
         if pdf_ready:
             try:
-                pdf_report_bytes = create_cma_pdf_report(
+                pdf_report_bytes = prepare_export('pv_pdf', 'Préparer le rapport photovoltaïque PDF', lambda: create_cma_pdf_report(
                     company_name=company_name,
                     company_siret=company_siret,
                     advisor_name=advisor_name,
@@ -7345,7 +7361,7 @@ if workspace_page == "Rapport":
                     filtered_df=filtered_df,
                     logo_path=report_logo_path,
                     report_notes=report_notes,
-                )
+                ))
             except Exception as exc:
                 pdf_report_bytes = None
                 st.error(
@@ -7356,18 +7372,21 @@ if workspace_page == "Rapport":
             pdf_report_bytes = None
 
         with export1:
-            st.download_button(
-                "⬇️ Télécharger le classeur Excel complet",
-                data=excel_bytes,
-                file_name="analyse_photovoltaique_cma.xlsx" if pv_enabled else "analyse_energetique_cma.xlsx",
-                mime=(
-                    "application/vnd.openxmlformats-officedocument."
-                    "spreadsheetml.sheet"
-                ),
-                use_container_width=True,
-            )
+            if excel_bytes is not None:
+                st.download_button(
+                    "⬇️ Télécharger le classeur Excel complet",
+                    data=excel_bytes,
+                    file_name="analyse_photovoltaique_cma.xlsx" if pv_enabled else "analyse_energetique_cma.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
+                )
 
         with export2:
+            daily_export = daily_df.copy()
+            daily_export["Date"] = daily_export["Date"].dt.strftime("%d/%m/%Y")
             csv_data = daily_export.to_csv(
                 index=False,
                 sep=";",
@@ -7387,7 +7406,7 @@ if workspace_page == "Rapport":
 
         energy_address_label = (selected_location["label"] if selected_location is not None else company_address)
         try:
-            energy_pdf_bytes = create_energy_prediagnostic_pdf(
+            energy_pdf_bytes = prepare_export('energy_pdf', 'Préparer le pré-diagnostic énergétique PDF', lambda: create_energy_prediagnostic_pdf(
                 company_name=company_name,
                 company_siret=company_siret,
                 advisor_name=advisor_name,
@@ -7410,7 +7429,7 @@ if workspace_page == "Rapport":
                 tariff_score_data=tariff_score_data,
                 report_notes=report_notes,
                 logo_path=report_logo_path,
-            )
+            ))
         except Exception as exc:
             energy_pdf_bytes = None
             st.error(f"Le pré-diagnostic énergétique n'a pas pu être généré. Détail : {exc}")
@@ -7445,11 +7464,11 @@ if workspace_page == "Rapport":
                         use_container_width=True,
                         key="download_pv_pdf",
                     )
-                else:
+                elif not pdf_ready:
                     st.info("Validez une adresse et assurez-vous que les données PVGIS sont disponibles pour générer ce livrable.")
 
         with st.expander("Vérifier la mise en page exacte avant téléchargement"):
-            st.caption("Ces aperçus affichent les mêmes PDF que les boutons de téléchargement. Modifiez les commentaires au-dessus pour les actualiser.")
+            st.caption("Ces aperçus affichent les mêmes PDF que les boutons de téléchargement. Après modification des commentaires, préparez à nouveau le PDF pour actualiser l’aperçu.")
             if st.checkbox("Afficher le PDF énergétique", key="show_energy_pdf") and energy_pdf_bytes:
                 render_pdf_preview(energy_pdf_bytes)
             if pv_enabled and pdf_report_bytes and st.checkbox("Afficher le PDF photovoltaïque", key="show_pv_pdf"):
@@ -7541,7 +7560,7 @@ if workspace_page == "Analyse":
                 hovermode="x unified",
             )
 
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_monthly,
                 use_container_width=True,
             )
@@ -7582,7 +7601,7 @@ if workspace_page == "Analyse":
                     showlegend=False,
                 )
 
-                st.plotly_chart(
+                cma_plotly_chart(
                     fig_solar,
                     use_container_width=True,
                 )
@@ -7645,7 +7664,7 @@ if workspace_page == "Analyse":
                 cliponaxis=False,
             )
 
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_energy_balance,
                 use_container_width=True,
             )
@@ -7673,7 +7692,7 @@ if workspace_page == "Analyse":
             hovermode="x unified",
         )
 
-        st.plotly_chart(
+        cma_plotly_chart(
             fig_global,
             use_container_width=True,
         )
@@ -7948,7 +7967,7 @@ if pv_enabled:
                         hovermode="x unified",
                     )
 
-                    st.plotly_chart(
+                    cma_plotly_chart(
                         fig_power_compare,
                         use_container_width=True,
                     )
@@ -7970,7 +7989,7 @@ if pv_enabled:
                         hovermode="x unified",
                     )
 
-                    st.plotly_chart(
+                    cma_plotly_chart(
                         fig_irradiation,
                         use_container_width=True,
                     )
@@ -8024,7 +8043,7 @@ if pv_enabled:
                         showlegend=False,
                     )
 
-                    st.plotly_chart(
+                    cma_plotly_chart(
                         fig_solar_balance,
                         use_container_width=True,
                     )
@@ -8317,7 +8336,7 @@ if workspace_page == "Analyse":
                 template="plotly_white",
                 showlegend=False,
             )
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_tariff_pie,
                 use_container_width=True,
             )
@@ -8345,7 +8364,7 @@ if workspace_page == "Analyse":
                 textposition="outside",
                 cliponaxis=False,
             )
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_tariff_bar,
                 use_container_width=True,
             )
@@ -8655,7 +8674,7 @@ if pv_enabled:
                 ),
             )
 
-            st.plotly_chart(
+            cma_plotly_chart(
                 fig_investment,
                 use_container_width=True,
             )
@@ -8822,7 +8841,7 @@ if pv_enabled:
                 ),
                 legend=dict(orientation="h"),
             )
-            st.plotly_chart(fig_cashflow, use_container_width=True)
+            cma_plotly_chart(fig_cashflow, use_container_width=True)
 
             with st.expander("Afficher le détail annuel"):
                 st.dataframe(
@@ -8902,35 +8921,37 @@ if workspace_page == "Analyse":
             with st.expander("Tableau interactif et tri"):
                 st.dataframe(make_colored_style(display_matrix),use_container_width=True,height=740)
 
-            weekly_excel = make_colored_excel_bytes(
+            weekly_excel = prepare_export('weekly_excel', 'Préparer le profil hebdomadaire Excel', lambda: make_colored_excel_bytes(
                 display_matrix,
                 sheet_name="Profil hebdomadaire",
                 index_label="Plage horaire",
-            )
-            weekly_png = make_colored_png_bytes(
+            ))
+            weekly_png = prepare_export('weekly_png', 'Préparer le profil hebdomadaire PNG', lambda: make_colored_png_bytes(
                 display_matrix,
                 title="Consommation horaire moyenne selon le jour de la semaine",
                 index_label="Plage horaire",
-            )
+            ))
             dl_weekly_xlsx, dl_weekly_png = st.columns(2)
             with dl_weekly_xlsx:
-                st.download_button(
-                    "Télécharger Excel",
-                    data=weekly_excel,
-                    file_name="consommation_horaire_moyenne_hebdomadaire.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="download_weekly_heatmap_xlsx",
-                )
+                if weekly_excel is not None:
+                    st.download_button(
+                        "Télécharger Excel",
+                        data=weekly_excel,
+                        file_name="consommation_horaire_moyenne_hebdomadaire.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_weekly_heatmap_xlsx",
+                    )
             with dl_weekly_png:
-                st.download_button(
-                    "Télécharger PNG",
-                    data=weekly_png,
-                    file_name="consommation_horaire_moyenne_hebdomadaire.png",
-                    mime="image/png",
-                    use_container_width=True,
-                    key="download_weekly_heatmap_png",
-                )
+                if weekly_png is not None:
+                    st.download_button(
+                        "Télécharger PNG",
+                        data=weekly_png,
+                        file_name="consommation_horaire_moyenne_hebdomadaire.png",
+                        mime="image/png",
+                        use_container_width=True,
+                        key="download_weekly_heatmap_png",
+                    )
 
         with col_chart:
             with st.container(border=True):
@@ -8945,7 +8966,7 @@ if workspace_page == "Analyse":
                     fig_profiles = px.area(profile_mean,x="Heure",y="Puissance_kW",color_discrete_sequence=[CMA_BLUE],labels={"Puissance_kW":"Puissance moyenne (kW)"})
                 fig_profiles.update_layout(template="plotly_white",height=340,margin=dict(l=10,r=10,t=20,b=20),hovermode="x unified",legend_title_text="")
                 fig_profiles.update_xaxes(tickvals=[0,6,12,18,23],ticktext=["00h","06h","12h","18h","23h"])
-                st.plotly_chart(fig_profiles,use_container_width=True)
+                cma_plotly_chart(fig_profiles,use_container_width=True)
             with st.container(border=True):
                 st.markdown("### Commentaire du conseiller")
                 st.text_area("Commentaire du conseiller sur les profils",key="note_profile",height=130,label_visibility="collapsed")
@@ -8984,7 +9005,7 @@ if workspace_page == "Analyse":
 
             heatmap.update_yaxes(autorange="reversed")
 
-            st.plotly_chart(
+            cma_plotly_chart(
                 heatmap,
                 use_container_width=True,
             )
@@ -9010,35 +9031,37 @@ if workspace_page == "Analyse":
                 height=720,
             )
 
-            full_excel = make_colored_excel_bytes(
+            full_excel = prepare_export('full_excel', 'Préparer toutes les dates en Excel', lambda: make_colored_excel_bytes(
                 full_display_matrix,
                 sheet_name="Toutes dates",
                 index_label="Date",
-            )
-            full_png = make_colored_png_bytes(
+            ))
+            full_png = prepare_export('full_png', 'Préparer toutes les dates en PNG', lambda: make_colored_png_bytes(
                 full_display_matrix,
                 title="Consommation horaire sur l’ensemble de la période",
                 index_label="Date",
-            )
+            ))
             dl_full_xlsx, dl_full_png = st.columns(2)
             with dl_full_xlsx:
-                st.download_button(
-                    "Télécharger Excel",
-                    data=full_excel,
-                    file_name="consommation_horaire_toutes_dates.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="download_full_heatmap_xlsx",
-                )
+                if full_excel is not None:
+                    st.download_button(
+                        "Télécharger Excel",
+                        data=full_excel,
+                        file_name="consommation_horaire_toutes_dates.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_full_heatmap_xlsx",
+                    )
             with dl_full_png:
-                st.download_button(
-                    "Télécharger PNG",
-                    data=full_png,
-                    file_name="consommation_horaire_toutes_dates.png",
-                    mime="image/png",
-                    use_container_width=True,
-                    key="download_full_heatmap_png",
-                )
+                if full_png is not None:
+                    st.download_button(
+                        "Télécharger PNG",
+                        data=full_png,
+                        file_name="consommation_horaire_toutes_dates.png",
+                        mime="image/png",
+                        use_container_width=True,
+                        key="download_full_heatmap_png",
+                    )
 
             full_heatmap = go.Figure(
                 data=go.Heatmap(
@@ -9063,7 +9086,7 @@ if workspace_page == "Analyse":
                 height=max(720, min(1800, 260 + 2.8 * len(date_hour_matrix))),
             )
             full_heatmap.update_yaxes(autorange="reversed")
-            st.plotly_chart(full_heatmap, use_container_width=True)
+            cma_plotly_chart(full_heatmap, use_container_width=True)
 
 
     # ============================================================
@@ -9110,7 +9133,7 @@ if workspace_page == "Analyse":
             legend_title_text="Jour",
         )
 
-        st.plotly_chart(
+        cma_plotly_chart(
             fig_daily,
             use_container_width=True,
         )
@@ -9168,7 +9191,7 @@ if workspace_page == "Analyse":
                 autorange="reversed"
             )
 
-            st.plotly_chart(
+            cma_plotly_chart(
                 calendar_heatmap,
                 use_container_width=True,
             )
@@ -9285,3 +9308,5 @@ if workspace_page == "Analyse":
 # Render after all widgets so this download captures their latest values.
 render_dossier_download(header_save)
 
+
+log_memory("run_complete")

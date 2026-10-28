@@ -52,6 +52,10 @@ def test_energy_is_offline_and_uses_selected_tariff(monkeypatch, tariff, expecte
         "annual_subscription_eur": 365.25})
     assert_ok(at)
     get.assert_not_called()
+    assert at.session_state["_test_result"]["energy_pdf"] is None
+    assert at.session_state["_test_result"]["excel"] is None
+    at.button(key="prepare_energy_pdf").click().run()
+    assert_ok(at)
     result = at.session_state["_test_result"]
     assert result["variable"] == pytest.approx(expected)
     assert result["fixed"] == pytest.approx(7)
@@ -59,7 +63,9 @@ def test_energy_is_offline_and_uses_selected_tariff(monkeypatch, tariff, expecte
     assert "Pré-diagnostic énergétique" in PdfReader(BytesIO(result["energy_pdf"])).pages[0].extract_text()
     assert "Opportunité photovoltaïque" not in [t.label for t in at.tabs]
     assert "pv_peak_kwp" not in [w.key for w in at.number_input]
-    workbook = pd.ExcelFile(BytesIO(result["excel"]))
+    at.button(key="prepare_report_excel").click().run()
+    assert_ok(at)
+    workbook = pd.ExcelFile(BytesIO(at.session_state["_test_result"]["excel"]))
     assert "Projection financière" not in workbook.sheet_names
     summary = pd.read_excel(workbook, sheet_name="Synthèse").set_index("Indicateur")["Valeur"]
     assert "Puissance photovoltaïque étudiée (kWc)" not in summary.index
@@ -96,6 +102,11 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
     fields["note_context"] += "\n\n" + ("Le conseiller vérifie les horaires, les équipements et les usages avec le dirigeant. " * 14)
     at = launch(fields, {"curve": curve_file(), "pma": pma_file()})
     assert_ok(at)
+    at.button(key="prepare_energy_pdf").click().run()
+    assert_ok(at)
+    energy_pdf = at.session_state["_test_result"]["energy_pdf"]
+    at.button(key="prepare_pv_pdf").click().run()
+    assert_ok(at)
     first = at.session_state["_test_result"]
     assert first["pv_pdf"]
     text = "\n".join(p.extract_text() for p in PdfReader(BytesIO(first["pv_pdf"])).pages)
@@ -113,7 +124,7 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
     import os
     if os.environ.get("QA_PDF_DIR"):
         out = Path(os.environ["QA_PDF_DIR"]); out.mkdir(parents=True, exist_ok=True)
-        (out / "energie.pdf").write_bytes(first["energy_pdf"])
+        (out / "energie.pdf").write_bytes(energy_pdf)
         (out / "photovoltaique.pdf").write_bytes(first["pv_pdf"])
     at.checkbox(key="_include_pv").uncheck().run()
     assert_ok(at)
@@ -141,7 +152,11 @@ def test_switch_restore_and_pdf_annotations(monkeypatch, tmp_path):
     assert fresh.session_state["_test_result"]["variable"] == first["variable"]
     get.assert_not_called()
     # Preview must use the same already-generated report and keep notes intact.
+    fresh.button(key="prepare_energy_pdf").click().run()
+    assert_ok(fresh)
     fresh.checkbox(key="show_energy_pdf").check().run()
+    assert_ok(fresh)
+    fresh.button(key="prepare_pv_pdf").click().run()
     assert_ok(fresh)
     fresh.checkbox(key="show_pv_pdf").check().run()
     assert_ok(fresh)
@@ -187,6 +202,8 @@ def test_navigation_preserves_notes_and_settings(monkeypatch):
     at.button(key="prepare_report").click().run()
     assert_ok(at)
     assert at.text_area(key="note_profile").value.startswith("NOTE_NAVIGATION")
+    at.button(key="prepare_energy_pdf").click().run()
+    assert_ok(at)
     text = "\n".join(p.extract_text() for p in PdfReader(BytesIO(at.session_state["_test_result"]["energy_pdf"])).pages)
     assert "NOTE_NAVIGATION" in text
     assert at.text_input(key="company_name").value == "Navigation"
@@ -241,3 +258,24 @@ def test_four_meter_dossiers_replace_data_in_one_session():
         assert at.session_state['_source_files']['curve']['name'] == source['name']
         if meter > 1:
             assert 'pma' not in at.session_state['_source_files']
+
+
+def test_chart_renderer_does_not_stack_on_rerun_and_unwraps_legacy(monkeypatch):
+    import streamlit as st
+    native = st.plotly_chart
+    previous = native
+    # Emulate the old application's wrapper chain during a hot code update.
+    for _ in range(3):
+        namespace = {'_PLOTLY_CHART_ORIGINAL': previous}
+        exec('def cma_plotly_chart(*args, **kwargs):\n    return _PLOTLY_CHART_ORIGINAL(*args, **kwargs)', namespace)
+        previous = namespace['cma_plotly_chart']
+    monkeypatch.setattr(st, 'plotly_chart', previous)
+    at = launch()
+    assert_ok(at)
+    assert st.plotly_chart is native
+    at.button(key='back_to_analysis').click().run()
+    assert_ok(at)
+    assert st.plotly_chart is native
+    at.run()
+    assert_ok(at)
+    assert st.plotly_chart is native
