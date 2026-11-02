@@ -1487,6 +1487,36 @@ def build_pma_daily_wide(pma_df: pd.DataFrame) -> pd.DataFrame:
     return daily
 
 
+def build_pma_hour_scatter(pma_df: pd.DataFrame):
+    """Réutilise les mesures lues ; aucune copie complète ni cache du graphique."""
+    fig = go.Figure()
+    colors = {"PMA": "#5B9BD5", "PMA1": "#ED7D31", "PMA2": "#A5A5A5", "PMA3": "#FFC000"}
+    for series, color in colors.items():
+        points = pma_df.loc[
+            pma_df["Grandeur physique"].eq(series), ["Horodate", "Puissance_kVA"]
+        ]
+        if points.empty:
+            continue
+        dates = points["Horodate"].dt
+        seconds = dates.hour * 3600 + dates.minute * 60 + dates.second
+        fig.add_trace(go.Scatter(
+            x=seconds, y=points["Puissance_kVA"], name=series, mode="markers",
+            marker=dict(color=color, size=6, opacity=0.75),
+            text=dates.strftime("%d/%m/%Y à %H:%M:%S"),
+            hovertemplate="%{text}<br>" + series + " : %{y:.2f} kVA<extra></extra>",
+        ))
+    fig.update_layout(
+        title="Puissances maximales quotidiennes selon l’heure",
+        xaxis=dict(title="Heure de la journée", range=[0, 86400],
+                   tickvals=list(range(0, 86401, 7200)),
+                   ticktext=[f"{hour:02d}:00" for hour in range(0, 25, 2)]),
+        yaxis=dict(title="Puissance maximale (kVA)", rangemode="tozero"),
+        legend_title_text="", hovermode="closest", height=520,
+        margin=dict(l=20, r=20, t=65, b=20),
+    )
+    return fig
+
+
 def build_pma_weekday_means(pma_daily: pd.DataFrame) -> pd.DataFrame:
     """Moyennes des puissances maximales quotidiennes par jour de semaine."""
     value_cols = [c for c in ["PMA", "PMA1", "PMA2", "PMA3"] if c in pma_daily.columns]
@@ -5330,6 +5360,19 @@ def render_pma_analysis(pma_uploaded_file) -> None:
                 fig_pma_daily,
                 use_container_width=True,
                 key="pma_daily_chart",
+            )
+
+            st.markdown("### À quelle heure surviennent les pointes quotidiennes ?")
+            st.caption(
+                "Chaque point représente le maximum d’une journée pour une série, "
+                "à l’heure indiquée dans le fichier Enedis. Survolez un point pour "
+                "voir sa date et son heure ; cliquez sur la légende pour masquer une série. "
+                "Les maxima des différentes séries ne sont pas nécessairement simultanés."
+            )
+            cma_plotly_chart(
+                build_pma_hour_scatter(pma_df),
+                use_container_width=True,
+                key="pma_hour_chart",
             )
 
             st.markdown("### Puissance max quotidienne moyenne par jour de la semaine")

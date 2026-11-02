@@ -188,6 +188,12 @@ def test_pma_only_dossier_can_be_saved(monkeypatch):
     at = launch({"pma_subscribed_kva": 42.0}, {"pma": pma_file()})
     assert_ok(at)
     assert at.number_input(key="pma_subscribed_kva").value == 42.0
+    import json
+    charts = [json.loads(chart.proto.figure.spec) for chart in at.get("plotly_chart")]
+    hourly = next(chart for chart in charts
+                  if chart["layout"]["title"]["text"] == "Puissances maximales quotidiennes selon l’heure")
+    assert hourly["data"][0]["x"] == [43200, 43200]
+    assert hourly["data"][0]["y"] == [25.0, 24.0]
     assert decode_dossier(captured[-1])["files"] == {"pma": pma_file()}
 
 
@@ -279,3 +285,4 @@ def test_chart_renderer_does_not_stack_on_rerun_and_unwraps_legacy(monkeypatch):
     at.run()
     assert_ok(at)
     assert st.plotly_chart is native
+
