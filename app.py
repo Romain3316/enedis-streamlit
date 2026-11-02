@@ -5253,7 +5253,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
             )
 
             subscribed_kva = st.number_input(
-                "Puissance souscrite (kVA)",
+                "Puissance souscrite (kVA) — À saisir par l’utilisateur",
                 min_value=0.0,
                 max_value=10000.0,
                 value=36.0,
