@@ -5317,6 +5317,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
             st.markdown("### Évolution de la puissance maximale quotidienne")
 
             fig_pma_daily = go.Figure()
+            pma_colors = {"PMA": "#5B9BD5", "PMA1": "#ED7D31", "PMA2": "#A5A5A5", "PMA3": "#FFC000"}
             pma_labels = {
                 "PMA": "PMA",
                 "PMA1": "PMA1",
@@ -5330,6 +5331,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
                         y=pma_daily[series],
                         mode="markers",
                         name=pma_labels[series],
+                        marker=dict(color=pma_colors[series]),
                         hovertemplate=(
                             "%{x|%d/%m/%Y}<br>"
                             + series
@@ -5384,7 +5386,7 @@ def render_pma_analysis(pma_uploaded_file) -> None:
                         x=pma_weekday["Jour"],
                         y=pma_weekday[series],
                         mode="markers",
-                        marker=dict(size=12),
+                        marker=dict(size=12, color=pma_colors[series]),
                         name=f"Moyenne de {series}",
                         hovertemplate=(
                             "%{x}<br>"
