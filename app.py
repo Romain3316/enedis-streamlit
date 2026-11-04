@@ -7,6 +7,7 @@ from heatmap_colors import style_matrix, pdf_cell_styles, cell_color, bounds, CO
 import json
 from dossier_schema import SETTINGS, PV_KEYS
 from dossier_ui import initialize_dossier, render_dossier_loader, source_uploader, render_dossier_download
+from invoice_ui import render_invoice_tests
 from io import BytesIO
 from pathlib import Path
 
@@ -5441,9 +5442,9 @@ gc.collect()
 log_memory("start_run")
 initialize_dossier()
 apply_theme()
-# Only the report is a separate view; obsolete V24 navigation returns to analysis.
+# Dedicated invoice workspace avoids running curve/PV calculations during OCR.
 workspace_page = st.session_state.get("_workspace_page", "Analyse")
-if workspace_page not in ("Analyse", "Rapport"):
+if workspace_page not in ("Analyse", "Rapport", "Factures — Tests"):
     workspace_page = "Analyse"
 st.session_state["_workspace_page"] = workspace_page
 brand_col, save_col, report_col = st.columns([5, 2, 2])
@@ -5458,6 +5459,13 @@ with report_col:
     else:
         st.button("Préparer le rapport", key="prepare_report", type="primary", use_container_width=True,
                   on_click=open_report, disabled=not st.session_state.get("_source_files", {}).get("curve"))
+
+workspace_page = st.radio("Espace de travail", ["Analyse", "Rapport", "Factures — Tests"],
+                          key="_workspace_page", horizontal=True)
+if workspace_page == "Factures — Tests":
+    render_invoice_tests()
+    render_dossier_download(header_save)
+    st.stop()
 
 with st.sidebar:
     st.markdown("### Analyse énergétique")

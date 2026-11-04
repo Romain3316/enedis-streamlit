@@ -8,6 +8,9 @@ from dossier_schema import SETTINGS
 def initialize_dossier():
     pending = st.session_state.pop("_pending_dossier", None)
     if pending:
+        from invoice_ui import clear_invoice
+        clear_invoice()
+        st.session_state.pop("_invoice_upload", None)
         st.session_state.pop("_prepared_export", None)
         if pending["version"] == 2:
             for key in SETTINGS:
@@ -47,6 +50,8 @@ def render_dossier_loader():
 
 
 def _update_source(role, key):
+    from invoice_ui import reset_invoice
+    reset_invoice()
     st.session_state.pop("_prepared_export", None)
     uploaded = st.session_state.get(key)
     files = dict(st.session_state.get("_source_files", {}))
@@ -56,6 +61,8 @@ def _update_source(role, key):
 
 
 def _remove_source(role):
+    from invoice_ui import reset_invoice
+    reset_invoice()
     st.session_state.pop("_prepared_export", None)
     files = dict(st.session_state.get("_source_files", {}))
     files.pop(role, None)
@@ -93,4 +100,5 @@ def render_dossier_download(target=None):
             file_name=f"dossier_analyse_energetique_{name}.json", mime="application/json", key="save_complete_dossier", use_container_width=True)
         if target is None:
             st.caption("Conserve les fichiers, les paramètres et les notes. Téléchargez une nouvelle copie après vos modifications.")
+
 
