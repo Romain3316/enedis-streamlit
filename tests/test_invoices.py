@@ -161,3 +161,19 @@ def test_photo_preparation_resizes_before_orientation(tmp_path, monkeypatch):
     monkeypatch.setattr(invoice_worker.shutil, 'which', lambda tool: tool)
     assert invoice_worker.extract(photo)['text'] == 'Synthetic invoice'
     assert observed == [((1200, 2400), 'L', None)]
+
+
+def test_worker_limits_numeric_threads_before_pillow_import(monkeypatch):
+    from unittest.mock import Mock
+    import invoice_reader
+    monkeypatch.setenv('OPENBLAS_NUM_THREADS', '32')
+    process = Mock(returncode=0)
+    process.communicate.return_value = (b'{"text":"", "pages":1,"ocr_pages":[1]}', b'')
+    launch = Mock(return_value=process)
+    monkeypatch.setattr(invoice_reader.subprocess, 'Popen', launch)
+    read_invoice(b'%PDF-synthetic')
+    env = launch.call_args.kwargs['env']
+    for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'OMP_THREAD_LIMIT', 'MKL_NUM_THREADS'):
+        assert env[name] == '1'
+    # The Streamlit process keeps its own environment; only the OCR child is limited.
+    assert invoice_reader.os.environ['OPENBLAS_NUM_THREADS'] == '32'

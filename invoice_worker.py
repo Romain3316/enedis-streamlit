@@ -27,7 +27,7 @@ def extract(path):
     if path.suffix.lower() in (".jpg", ".png"):
         if not shutil.which("tesseract"):
             raise ValueError("Le moteur OCR n'est pas disponible sur ce serveur.")
-        mark("image_decode")
+        mark("image_import")
         from PIL import Image, ImageOps
         mark("image_open")
         # Convert to one channel before resizing; avoid full-size RGBA/EXIF copies.

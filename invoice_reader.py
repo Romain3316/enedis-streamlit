@@ -60,7 +60,9 @@ def read_invoice(data):
                 [sys.executable, str(Path(__file__).resolve().with_name("invoice_worker.py")), str(path)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=(os.name == "posix"),
-                env={**os.environ, "OMP_THREAD_LIMIT": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, "OMP_THREAD_LIMIT": "1", "OMP_NUM_THREADS": "1",
+                     "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+                     "PYTHONIOENCODING": "utf-8"},
             )
             try:
                 output, stderr = process.communicate(timeout=90)
@@ -74,7 +76,7 @@ def read_invoice(data):
             if process.returncode:
                 log_reader_state("worker_failed")
                 # Accept only fixed markers: never print raw OCR stderr or filenames.
-                stages = re.findall(rb"(?m)^\[ocr_stage\] (worker_started|limits_set|image_decode|image_open|image_resize|image_orientation|image_grayscale|image_save|pdfinfo|pdftotext|pdftoppm|tesseract)$", stderr)
+                stages = re.findall(rb"(?m)^\[ocr_stage\] (worker_started|limits_set|image_decode|image_import|image_open|image_resize|image_orientation|image_grayscale|image_save|pdfinfo|pdftotext|pdftoppm|tesseract)$", stderr)
                 stage = stages[-1].decode("ascii") if stages else "before_worker_marker"
                 elapsed = round(time.monotonic() - started, 1)
                 message = worker_failure(process.returncode, stderr)
