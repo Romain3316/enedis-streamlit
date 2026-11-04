@@ -37,6 +37,9 @@ def test_validation_selective_apply_address_and_roundtrip():
     at.session_state['pma_subscribed_kva'] = 36.0
     at.run()
     assert not at.exception
+    assert at.multiselect(key='_invoice_info_selected').value == [FIELDS['company_name'], FIELDS['invoice_address']]
+    assert at.text_input(key='_invoice_info_company_name').value == 'ATELIER TEST'
+    assert at.session_state['company_name'] == 'Ancien nom'
     at.multiselect(key='_invoice_info_selected').set_value([FIELDS[k] for k in ('company_name', 'invoice_address', 'invoice_power')])
     at.button[0].click().run()
     assert at.error and at.session_state['company_name'] == 'Ancien nom'

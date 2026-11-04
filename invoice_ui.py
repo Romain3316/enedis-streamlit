@@ -108,12 +108,19 @@ def render_invoice_information(text):
     st.subheader("Informations de la facture — à vérifier")
     proposed = extract_metadata(text)
     st.caption("Les champs vides n’ont pas été reconnus avec certitude. Corrigez la lecture et sélectionnez uniquement les informations à enregistrer. Les valeurs validées seront sauvegardées avec le dossier.")
+    identity = [key for key in ("company_name", "invoice_address") if key in proposed]
+    if identity:
+        st.info("Nom et adresse repérés : les champs détectés sont préremplis et présélectionnés ci-dessous. Vérifiez-les puis enregistrez-les pour les reporter dans le dossier.")
+        for key in identity:
+            st.text(FIELDS[key] + " : " + proposed[key]["value"])
+        st.caption("Pour reporter également l’adresse dans l’analyse, cochez la confirmation « site étudié ».")
     if proposed:
         with st.expander("Sources des informations proposées"):
             st.dataframe([{"Champ": FIELDS[k], "Proposition": v["value"], "Texte source": v["evidence"]}
                           for k, v in proposed.items()], hide_index=True, use_container_width=True)
     with st.form("invoice_information"):
         selected_labels = st.multiselect("Informations à enregistrer", list(FIELDS.values()),
+                                        default=[FIELDS[key] for key in identity],
                                         key="_invoice_info_selected")
         selected = [key for key, label in FIELDS.items() if label in selected_labels]
         values = {key: st.text_input(label, value=proposed.get(key, {}).get("value", "") if text else st.session_state.get(key, ""),
