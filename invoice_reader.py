@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 _READ_LOCK = threading.Lock()
 MAX_BYTES = 10 * 1024 * 1024
@@ -31,6 +32,16 @@ def worker_failure(returncode, stderr):
     return f"{reason} Diagnostic OCR : sortie {returncode}."
 
 
+def log_reader_state(stage):
+    counters = {"stage": stage}
+    for name in ("memory.current", "memory.max", "memory.events"):
+        try:
+            counters[name] = (Path("/sys/fs/cgroup") / name).read_text().strip()
+        except OSError:
+            pass
+    print("[invoice_memory] " + json.dumps(counters), flush=True)
+
+
 def read_invoice(data):
     suffix = (".pdf" if data.startswith(b"%PDF-") else
               ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else
@@ -43,6 +54,8 @@ def read_invoice(data):
         with tempfile.TemporaryDirectory(prefix="invoice-") as directory:
             path = Path(directory) / ("source" + suffix)
             path.write_bytes(data)
+            log_reader_state("before_read")
+            started = time.monotonic()
             process = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve().with_name("invoice_worker.py")), str(path)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -59,7 +72,13 @@ def read_invoice(data):
                 process.communicate()
                 raise ValueError("Lecture trop longue. Essayez un PDF plus court ou plus léger.")
             if process.returncode:
+                log_reader_state("worker_failed")
+                # Accept only fixed markers: never print raw OCR stderr or filenames.
+                stages = re.findall(rb"(?m)^\[ocr_stage\] (worker_started|limits_set|image_decode|pdfinfo|pdftotext|pdftoppm|tesseract)$", stderr)
+                stage = stages[-1].decode("ascii") if stages else "before_worker_marker"
+                elapsed = round(time.monotonic() - started, 1)
                 message = worker_failure(process.returncode, stderr)
+                message += f" Étape : {stage} ; durée : {elapsed} s."
                 print("[invoice_reader] " + message, flush=True)
                 raise ValueError(message)
             if len(output) > 500_000:

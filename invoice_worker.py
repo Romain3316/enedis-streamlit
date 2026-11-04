@@ -8,8 +8,13 @@ import subprocess
 import sys
 
 
+def mark(stage):
+    print("[ocr_stage] " + stage, file=sys.stderr, flush=True)
+
+
 def command(args, timeout=20):
     tool = Path(args[0]).name
+    mark(tool)
     try:
         return subprocess.run(args, check=True, capture_output=True, timeout=timeout).stdout.decode("utf-8", errors="replace")
     except subprocess.CalledProcessError as exc:
@@ -22,6 +27,7 @@ def extract(path):
     if path.suffix.lower() in (".jpg", ".png"):
         if not shutil.which("tesseract"):
             raise ValueError("Le moteur OCR n'est pas disponible sur ce serveur.")
+        mark("image_decode")
         from PIL import Image, ImageOps
         # Bound decoded memory before loading; EXIF orientation is handled locally.
         with Image.open(path) as original:
@@ -67,12 +73,14 @@ def extract(path):
 
 
 if __name__ == "__main__":
+    mark("worker_started")
     try:
         if os.name == "posix":
             import resource
             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 ** 2, 512 * 1024 ** 2))
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
             resource.setrlimit(resource.RLIMIT_FSIZE, (20 * 1024 ** 2, 20 * 1024 ** 2))
+        mark("limits_set")
         result = extract(Path(sys.argv[1]))
     except ValueError as exc:
         result = {"error": str(exc)}

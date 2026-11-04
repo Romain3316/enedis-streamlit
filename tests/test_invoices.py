@@ -126,3 +126,17 @@ def test_invoice_workspace_does_not_change_settings_without_confirmation(monkeyp
     at.run()
     assert not at.exception
     assert '_invoice_result' not in at.session_state
+
+
+def test_killed_worker_reports_only_safe_stage_and_memory(monkeypatch, capsys):
+    from unittest.mock import Mock
+    import invoice_reader
+    process = Mock(returncode=-9)
+    process.communicate.return_value = (b'', b'[ocr_stage] limits_set\n[ocr_stage] image_decode\nsecret customer data\n')
+    monkeypatch.setattr(invoice_reader.subprocess, 'Popen', Mock(return_value=process))
+    with pytest.raises(ValueError, match='Étape : image_decode'):
+        read_invoice(b'%PDF-synthetic')
+    output = capsys.readouterr().out
+    assert 'before_read' in output and 'worker_failed' in output
+    assert 'secret' not in output and 'customer' not in output
+    assert not invoice_reader._READ_LOCK.locked()
