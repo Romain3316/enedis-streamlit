@@ -13,6 +13,24 @@ _READ_LOCK = threading.Lock()
 MAX_BYTES = 10 * 1024 * 1024
 
 
+def worker_failure(returncode, stderr):
+    """Classify stderr without displaying document text, filenames or tracebacks."""
+    detail = stderr.decode("utf-8", errors="replace")
+    if "can't open file" in detail:
+        reason = "Le module de lecture est introuvable sur le serveur. Le déploiement est à vérifier."
+    elif "ModuleNotFoundError" in detail or "ImportError" in detail:
+        reason = "Une dépendance du module de lecture ne se charge pas sur le serveur."
+    elif "MemoryError" in detail or "Cannot allocate memory" in detail:
+        reason = "Le processus de lecture n’a pas pu allouer la mémoire nécessaire."
+    elif returncode == -9:
+        reason = "Le serveur a arrêté le processus de lecture (SIGKILL). La cause, notamment une éventuelle limite mémoire, reste à vérifier dans les logs."
+    elif returncode in (-11, -6):
+        reason = "Le moteur de lecture a subi un arrêt natif inattendu sur le serveur."
+    else:
+        reason = "Le processus de lecture n’a pas terminé normalement."
+    return f"{reason} Diagnostic OCR : sortie {returncode}."
+
+
 def read_invoice(data):
     suffix = (".pdf" if data.startswith(b"%PDF-") else
               ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else
@@ -26,13 +44,13 @@ def read_invoice(data):
             path = Path(directory) / ("source" + suffix)
             path.write_bytes(data)
             process = subprocess.Popen(
-                [sys.executable, str(Path(__file__).with_name("invoice_worker.py")), str(path)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                [sys.executable, str(Path(__file__).resolve().with_name("invoice_worker.py")), str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=(os.name == "posix"),
-                env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+                env={**os.environ, "OMP_THREAD_LIMIT": "1", "PYTHONIOENCODING": "utf-8"},
             )
             try:
-                output, _ = process.communicate(timeout=90)
+                output, stderr = process.communicate(timeout=90)
             except subprocess.TimeoutExpired:
                 if os.name == "posix":
                     os.killpg(process.pid, signal.SIGKILL)
@@ -40,9 +58,16 @@ def read_invoice(data):
                     process.kill()
                 process.communicate()
                 raise ValueError("Lecture trop longue. Essayez un PDF plus court ou plus léger.")
-            if process.returncode or len(output) > 500_000:
-                raise ValueError("Lecture interrompue : fichier complexe, endommagé ou limite de ressources atteinte.")
-            result = json.loads(output)
+            if process.returncode:
+                message = worker_failure(process.returncode, stderr)
+                print("[invoice_reader] " + message, flush=True)
+                raise ValueError(message)
+            if len(output) > 500_000:
+                raise ValueError("Le texte extrait dépasse la limite du test (500 ko).")
+            try:
+                result = json.loads(output)
+            except (ValueError, UnicodeError):
+                raise ValueError("Réponse du moteur de lecture invalide. Diagnostic OCR : réponse JSON absente ou illisible.")
             if "error" in result:
                 raise ValueError(result["error"])
             return {**result, **parse_invoice_text(result["text"])}

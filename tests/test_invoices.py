@@ -7,6 +7,17 @@ from streamlit.testing.v1 import AppTest
 from invoice_reader import parse_invoice_text, read_invoice
 
 
+def test_worker_failures_are_actionable_without_leaking_document_details():
+    from invoice_reader import worker_failure
+    error = worker_failure(2, b"python: can't open file '/private/customer/invoice.py'")
+    assert 'introuvable' in error and 'sortie 2' in error
+    assert '/private' not in error and 'customer' not in error
+    assert 'dépendance' in worker_failure(1, b'ModuleNotFoundError: secret')
+    assert 'secret' not in worker_failure(1, b'ModuleNotFoundError: secret')
+    assert 'reste à vérifier' in worker_failure(-9, b'')
+    assert 'mémoire' in worker_failure(1, b'MemoryError')
+
+
 TEXT = '''Coût de la Fourniture
 HPE du 23/08/2025 au 21/09/2025 6,101 MWh 97,66 €/MWh 595,82 € 20%
 HCE du 23/08/2025 au 21/09/2025 1714 kWh 0,08285 €/kWh 142,00 € 20%

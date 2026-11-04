@@ -9,7 +9,13 @@ import sys
 
 
 def command(args, timeout=20):
-    return subprocess.run(args, check=True, capture_output=True, timeout=timeout).stdout.decode("utf-8", errors="replace")
+    tool = Path(args[0]).name
+    try:
+        return subprocess.run(args, check=True, capture_output=True, timeout=timeout).stdout.decode("utf-8", errors="replace")
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(f"Le moteur {tool} a échoué (sortie {exc.returncode}). Vérifiez l’installation OCR et le document.") from None
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"Le moteur {tool} a dépassé le délai de {timeout} secondes.") from None
 
 
 def extract(path):
@@ -70,6 +76,8 @@ if __name__ == "__main__":
         result = extract(Path(sys.argv[1]))
     except ValueError as exc:
         result = {"error": str(exc)}
-    except Exception:
-        result = {"error": "PDF illisible, protégé ou traitement trop long. Essayez un autre document."}
+    except MemoryError:
+        result = {"error": "Le module de lecture a atteint sa limite mémoire de travail. Diagnostic OCR : MemoryError."}
+    except Exception as exc:
+        result = {"error": f"Le document n’a pas pu être lu. Diagnostic OCR : {type(exc).__name__}."}
     print(json.dumps(result, ensure_ascii=False))
