@@ -1,7 +1,9 @@
 """Espace expérimental de lecture et de validation des factures."""
+import re
 import streamlit as st
 from dossier_schema import SETTINGS
 from invoice_reader import read_invoice
+from invoice_metadata import FIELDS, extract_metadata
 
 PRICE_FIELDS = {
     "HP": ("hp_electricity_price", "Heures pleines"),
@@ -44,6 +46,8 @@ def render_invoice_tests():
             st.error(str(exc))
     result = st.session_state.get("_invoice_result")
     if not result:
+        if any(st.session_state.get(k) for k in FIELDS if k != "company_name"):
+            render_invoice_information("")
         return
     st.caption(f"{result['pages']} page(s) lue(s) · OCR : " +
                (", ".join(map(str, result["ocr_pages"])) if result["ocr_pages"] else "non nécessaire"))
@@ -54,6 +58,7 @@ def render_invoice_tests():
                        "Consommation (kWh)": r["kwh"], "Prix lu (€/kWh)": r["price"],
                        "Ligne source à vérifier": r["evidence"]} for r in result["rows"]],
                      use_container_width=True, hide_index=True)
+    render_invoice_information(result["text"])
     candidates = result["candidates"]
     if not candidates:
         st.warning("Aucun tarif fiable reconnu par plage. Vous pouvez saisir les prix ci-dessous après lecture de la facture. Ne déduisez pas HP/HC de l’ordre des nombres dans le texte OCR.")
@@ -97,3 +102,46 @@ def render_invoice_tests():
             st.session_state.pop("_prepared_export", None)
             st.success("Prix sélectionnés appliqués. Revenez dans l’analyse pour vérifier les horaires et "
                        "les autres paramètres, puis sauvegardez votre dossier.")
+
+
+def render_invoice_information(text):
+    st.subheader("Informations de la facture — à vérifier")
+    proposed = extract_metadata(text)
+    st.caption("Les champs vides n’ont pas été reconnus avec certitude. Corrigez la lecture et sélectionnez uniquement les informations à enregistrer. Les valeurs validées seront sauvegardées avec le dossier.")
+    if proposed:
+        with st.expander("Sources des informations proposées"):
+            st.dataframe([{"Champ": FIELDS[k], "Proposition": v["value"], "Texte source": v["evidence"]}
+                          for k, v in proposed.items()], hide_index=True, use_container_width=True)
+    with st.form("invoice_information"):
+        selected_labels = st.multiselect("Informations à enregistrer", list(FIELDS.values()),
+                                        key="_invoice_info_selected")
+        selected = [key for key, label in FIELDS.items() if label in selected_labels]
+        values = {key: st.text_input(label, value=proposed.get(key, {}).get("value", "") if text else st.session_state.get(key, ""),
+                                    key="_invoice_info_" + key,
+                                    help="Valeur actuelle du dossier : " + (st.session_state.get(key, "") or "non renseignée"))
+                  for key, label in FIELDS.items()}
+        site_address = st.checkbox("J’ai vérifié que cette adresse est celle du site étudié : l’utiliser aussi comme adresse de l’entreprise.", key="_invoice_info_site")
+        st.caption("L’adresse de facturation peut différer du site alimenté. Le PDL/PRM doit correspondre au compteur étudié. La puissance reste descriptive : aucune conversion kW/kVA ni modification des calculs.")
+        verified = st.checkbox("J’ai vérifié ces informations sur la facture et leur correspondance avec ce dossier.", key="_invoice_info_verified")
+        submitted = st.form_submit_button("Enregistrer les informations validées")
+    if submitted:
+        if not verified or not selected or any(not values[k].strip() for k in selected):
+            st.error("Sélectionnez des informations renseignées et confirmez leur vérification.")
+        elif "invoice_prm" in selected and not re.fullmatch(r"\d{14}", values["invoice_prm"].strip()):
+            st.error("Le PDL/PRM doit comporter exactement 14 chiffres.")
+        elif site_address and "invoice_address" not in selected:
+            st.error("Sélectionnez l’adresse parmi les informations à enregistrer.")
+        else:
+            for key in selected:
+                st.session_state[key] = values[key].strip()
+            if site_address:
+                st.session_state["company_address"] = values["invoice_address"].strip()
+                st.session_state.pop("address_candidates", None)
+                st.session_state.pop("selected_label", None)
+                st.session_state["manual_coordinates"] = False
+                st.session_state.pop("_resolved_location", None)
+                st.session_state.pop("_solar_snapshot", None)
+            st.session_state.pop("_prepared_export", None)
+            st.success("Informations enregistrées dans le dossier courant. Sauvegardez le dossier pour les conserver.")
+            if site_address:
+                st.info("Recherchez et validez la nouvelle adresse dans l’analyse photovoltaïque avant de recalculer.")

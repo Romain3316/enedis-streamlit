@@ -105,6 +105,11 @@ SETTINGS = {'period_mode': {'type': 'str',
                    'choices': ['Analyse énergétique', 'Opportunité photovoltaïque'],
                    'default': 'Analyse énergétique'}}
 
+# Validated invoice information is descriptive, never used as calculation input.
+from invoice_metadata import FIELDS as INVOICE_FIELDS
+SETTINGS.update({key: {"type": "str", "default": ""}
+                 for key in INVOICE_FIELDS if key != "company_name"})
+
 PV_KEYS = ['pv_peak_kwp',
  'pv_tilt',
  'orientation_label',
@@ -140,3 +145,4 @@ PV_KEYS = ['pv_peak_kwp',
  'production_degradation_percent',
  'operating_cost_increase_percent',
  'discount_rate_percent']
+
