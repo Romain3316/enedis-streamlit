@@ -74,7 +74,7 @@ def read_invoice(data):
             if process.returncode:
                 log_reader_state("worker_failed")
                 # Accept only fixed markers: never print raw OCR stderr or filenames.
-                stages = re.findall(rb"(?m)^\[ocr_stage\] (worker_started|limits_set|image_decode|pdfinfo|pdftotext|pdftoppm|tesseract)$", stderr)
+                stages = re.findall(rb"(?m)^\[ocr_stage\] (worker_started|limits_set|image_decode|image_open|image_resize|image_orientation|image_grayscale|image_save|pdfinfo|pdftotext|pdftoppm|tesseract)$", stderr)
                 stage = stages[-1].decode("ascii") if stages else "before_worker_marker"
                 elapsed = round(time.monotonic() - started, 1)
                 message = worker_failure(process.returncode, stderr)

@@ -140,3 +140,24 @@ def test_killed_worker_reports_only_safe_stage_and_memory(monkeypatch, capsys):
     assert 'before_read' in output and 'worker_failed' in output
     assert 'secret' not in output and 'customer' not in output
     assert not invoice_reader._READ_LOCK.locked()
+
+
+def test_photo_preparation_resizes_before_orientation(tmp_path, monkeypatch):
+    from PIL import Image
+    import invoice_worker
+    photo = tmp_path / 'source.jpg'
+    with Image.new('RGB', (3200, 1600), 'white') as image:
+        exif = Image.Exif()
+        exif[274] = 6
+        image.save(photo, exif=exif)
+    observed = []
+    def command(args, timeout=20):
+        if '--list-langs' in args:
+            return 'eng\n'
+        with Image.open(args[1]) as prepared:
+            observed.append((prepared.size, prepared.mode, prepared.getexif().get(274)))
+        return 'Synthetic invoice'
+    monkeypatch.setattr(invoice_worker, 'command', command)
+    monkeypatch.setattr(invoice_worker.shutil, 'which', lambda tool: tool)
+    assert invoice_worker.extract(photo)['text'] == 'Synthetic invoice'
+    assert observed == [((1200, 2400), 'L', None)]

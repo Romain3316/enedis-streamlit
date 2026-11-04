@@ -29,16 +29,21 @@ def extract(path):
             raise ValueError("Le moteur OCR n'est pas disponible sur ce serveur.")
         mark("image_decode")
         from PIL import Image, ImageOps
-        # Bound decoded memory before loading; EXIF orientation is handled locally.
-        with Image.open(path) as original:
-            if original.format not in ("JPEG", "PNG") or original.width * original.height > 20_000_000:
+        mark("image_open")
+        # Convert to one channel before resizing; avoid full-size RGBA/EXIF copies.
+        with Image.open(path, formats=("JPEG", "PNG")) as original:
+            if original.width * original.height > 20_000_000:
                 raise ValueError("Photo trop grande : maximum 20 millions de pixels, en JPG ou PNG.")
             original.draft("RGB", (2400, 2400))
-            with ImageOps.exif_transpose(original) as oriented:
-                oriented.thumbnail((2400, 2400))
-                with ImageOps.grayscale(oriented) as gray:
-                    image_path = path.parent / "ocr.png"
-                    gray.save(image_path)
+            mark("image_grayscale")
+            with ImageOps.grayscale(original) as gray:
+                mark("image_resize")
+                gray.thumbnail((2400, 2400))
+                mark("image_orientation")
+                ImageOps.exif_transpose(gray, in_place=True)
+                image_path = path.parent / "ocr.png"
+                mark("image_save")
+                gray.save(image_path, format="PNG")
         languages = command(["tesseract", "--list-langs"])
         language = "fra" if "fra" in languages.splitlines() else "eng"
         text = command(["tesseract", str(image_path), "stdout", "-l", language])
