@@ -14,13 +14,16 @@ MAX_BYTES = 10 * 1024 * 1024
 
 
 def read_invoice(data):
-    if not data.startswith(b"%PDF-") or len(data) > MAX_BYTES:
-        raise ValueError("Choisissez un PDF de 10 Mo maximum.")
+    suffix = (".pdf" if data.startswith(b"%PDF-") else
+              ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else
+              ".jpg" if data.startswith(b"\xff\xd8\xff") else None)
+    if suffix is None or len(data) > MAX_BYTES:
+        raise ValueError("Choisissez un PDF, JPG ou PNG de 10 Mo maximum.")
     if not _READ_LOCK.acquire(blocking=False):
         raise ValueError("Une facture est déjà en cours de lecture. Réessayez dans un instant.")
     try:
         with tempfile.TemporaryDirectory(prefix="invoice-") as directory:
-            path = Path(directory) / "source.pdf"
+            path = Path(directory) / ("source" + suffix)
             path.write_bytes(data)
             process = subprocess.Popen(
                 [sys.executable, str(Path(__file__).with_name("invoice_worker.py")), str(path)],
@@ -66,6 +69,21 @@ def parse_invoice_text(text):
                          kwh=to_float(quantity) * (1000 if unit.lower() == "mwh" else 1),
                          price=to_float(rate) / (1000 if rate_unit.lower() == "mwh" else 1),
                          evidence=line.strip()))
+    # EDF : conserver le lien explicite entre libellé, période, quantité et prix.
+    # Ne pas assembler des colonnes OCR séparées par simple ordre d'apparition.
+    if re.search(r"\bEDF\b", text, re.I):
+        for line in text.splitlines():
+            match = re.search(
+                rf"Heures\s+(pleines|creuses)\s+(?:du\s+)?({date})\s+au\s+({date})\s+"
+                rf"({number})\s*kWh\s+({number})\s*(c€|cEUR|cts|€|EUR)\s*/\s*kWh",
+                line, re.I)
+            if match:
+                label, start, end, quantity, rate, unit = match.groups()
+                convert = lambda v: float(re.sub(r"[ \u00a0\u202f]", "", v).replace(",", "."))
+                rows.append(dict(series="HP" if label.lower() == "pleines" else "HC",
+                                 start=start, end=end, kwh=convert(quantity),
+                                 price=convert(rate) / (100 if unit.lower().startswith("c") else 1),
+                                 evidence=line.strip()))
     # Plusieurs lignes d'une même plage peuvent signaler une régularisation ou un changement de prix.
     candidates = {r["series"]: r for r in rows
                   if sum(other["series"] == r["series"] for other in rows) == 1

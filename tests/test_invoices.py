@@ -40,6 +40,43 @@ def test_digital_pdf_reading():
     assert result['candidates']['HPE']['price'] == pytest.approx(0.09766)
 
 
+def test_edf_explicit_lines_and_no_guessing_from_columns():
+    text = ('EDF\nElectricité Heures pleines du 03/12/2025 au 02/01/2026 5 559 kWh 13,700 c€/kWh\n'
+            'Electricité Heures creuses du 03/12/2025 au 02/01/2026 2 636 kWh 11,090 c€/kWh')
+    result = parse_invoice_text(text)
+    assert result['candidates']['HP']['price'] == pytest.approx(.137)
+    assert result['candidates']['HC']['price'] == pytest.approx(.1109)
+    assert sum(r['kwh'] for r in result['rows']) == 8195
+    assert not parse_invoice_text('EDF\nHeures pleines\nHeures creuses\n13,700 c€/kWh\n11,090 c€/kWh')['candidates']
+    assert not parse_invoice_text(text + '\n' + text)['candidates']
+
+
+def test_photo_headers_and_invalid_image_rejected():
+    with pytest.raises(ValueError):
+        read_invoice(b'\x89PNG\r\n\x1a\nnot-an-image')
+    with pytest.raises(ValueError):
+        read_invoice(b'\xff\xd8\xffnot-an-image')
+
+
+def test_manual_edf_review_requires_values_and_confirmation(monkeypatch):
+    import invoice_ui
+    at = AppTest.from_string('from invoice_ui import render_invoice_tests\nrender_invoice_tests()')
+    at.session_state['_invoice_result'] = dict(text='EDF photo floue', pages=1, ocr_pages=[1], rows=[], candidates={})
+    at.run()
+    assert not at.exception
+    at.multiselect(key='_invoice_selected').set_value(['HP', 'HC'])
+    at.checkbox(key='_invoice_verified').check()
+    next(b for b in at.button if b.label.startswith('Appliquer les valeurs')).click().run()
+    assert at.error
+    at.number_input(key='_invoice_price_HP').set_value(.137)
+    at.number_input(key='_invoice_price_HC').set_value(.1109)
+    next(b for b in at.button if b.label.startswith('Appliquer les valeurs')).click().run()
+    assert not at.error and not at.exception
+    assert at.session_state['hp_electricity_price'] == .137
+    assert at.session_state['hc_electricity_price'] == .1109
+    assert at.session_state['electricity_tariff_type'] == 'HP / HC'
+
+
 def test_invoice_workspace_does_not_change_settings_without_confirmation(monkeypatch):
     import invoice_ui
     monkeypatch.setattr(invoice_ui.st, 'file_uploader', lambda *a, **kw: BytesIO(b'%PDF-test'))

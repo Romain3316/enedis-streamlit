@@ -13,6 +13,26 @@ def command(args, timeout=20):
 
 
 def extract(path):
+    if path.suffix.lower() in (".jpg", ".png"):
+        if not shutil.which("tesseract"):
+            raise ValueError("Le moteur OCR n'est pas disponible sur ce serveur.")
+        from PIL import Image, ImageOps
+        # Bound decoded memory before loading; EXIF orientation is handled locally.
+        with Image.open(path) as original:
+            if original.format not in ("JPEG", "PNG") or original.width * original.height > 20_000_000:
+                raise ValueError("Photo trop grande : maximum 20 millions de pixels, en JPG ou PNG.")
+            original.draft("RGB", (2400, 2400))
+            with ImageOps.exif_transpose(original) as oriented:
+                oriented.thumbnail((2400, 2400))
+                with ImageOps.grayscale(oriented) as gray:
+                    image_path = path.parent / "ocr.png"
+                    gray.save(image_path)
+        languages = command(["tesseract", "--list-langs"])
+        language = "fra" if "fra" in languages.splitlines() else "eng"
+        text = command(["tesseract", str(image_path), "stdout", "-l", language])
+        if len(text) > 30_000:
+            raise ValueError("Image trop dense pour cet espace de test.")
+        return {"text": text, "ocr_pages": [1], "pages": 1}
     for tool in ("pdfinfo", "pdftotext"):
         if not shutil.which(tool):
             raise ValueError("Lecture PDF indisponible sur ce serveur (Poppler manquant).")
